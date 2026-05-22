@@ -1,7 +1,7 @@
 {
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "2.6.3",
+  "version": "2.6.4",
   "description": "End-to-end encrypted chat plugin for OpenClaw agents — Node.js implementation with full UI",
   "entry": "index.js",
   "activation": {
