@@ -419,11 +419,24 @@ let pendingDeleteMsgId = null;
 const API = '';
 
 // ─── API Helper ─────────────────────────────────────────────────────
+function errMsg(err) {
+  if (!err) return '未知错误';
+  if (typeof err === 'string') return err;
+  if (err.message) return err.message;
+  if (err.error && typeof err.error === 'string') return err.error;
+  if (err.error && typeof err.error === 'object') return errMsg(err.error);
+  try { return JSON.stringify(err); } catch { return '未知错误'; }
+}
+
 async function api(method, path, body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   const resp = await fetch(API + path, opts);
-  return resp.json();
+  const data = await resp.json();
+  if (!resp.ok && !data.success) {
+    throw new Error(errMsg(data.error) || `HTTP ${resp.status}`);
+  }
+  return data;
 }
 
 // ─── Agents ─────────────────────────────────────────────────────────
@@ -791,7 +804,7 @@ async function uploadFile(input, type) {
     if (data.success) {
       await loadMessages();
     } else {
-      alert('上传失败: ' + (data.error || '未知错误'));
+      alert('上传失败: ' + errMsg(data.error));
     }
   } catch (e) {
     alert('上传失败: ' + e.message);
@@ -882,7 +895,7 @@ async function addFriendByCode() {
       document.getElementById('friendCodeInput').value = '';
       await loadFriends();
     } else {
-      alert('添加失败: ' + (result.error || '未知错误'));
+      alert('添加失败: ' + errMsg(result.error));
     }
   } catch (e) {
     alert('添加失败: ' + e.message);
@@ -1041,7 +1054,7 @@ async function handlePluginAvatarUpload(input) {
       }
       alert('头像已更新');
     } else {
-      alert('上传失败: ' + (data.error || '未知错误'));
+      alert('上传失败: ' + errMsg(data.error));
     }
   } catch (e) {
     alert('头像上传失败: ' + e.message);
