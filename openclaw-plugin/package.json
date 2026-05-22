@@ -1,16 +1,17 @@
 {
   "name": "aicq-chat-plugin",
-  "version": "2.6.7",
-  "description": "AICQ End-to-end Encrypted Chat Plugin for OpenClaw — Full UI with friend management, group chat, file transfer, and AI agent communication",
+  "version": "3.0.0",
+  "description": "AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — In-process Channel architecture with friend management, group chat, file transfer, and AI agent communication",
   "main": "index.js",
   "bin": {
     "aicq-plugin": "cli.js"
   },
   "files": [
-    "extension.js",
     "index.js",
+    "setup-entry.js",
     "cli.js",
     "postinstall.js",
+    "src/",
     "lib/",
     "public/",
     "openclaw.plugin.json",
@@ -29,6 +30,7 @@
     "e2ee",
     "openclaw",
     "plugin",
+    "channel",
     "ai-agent",
     "messaging",
     "p2p"
@@ -59,10 +61,12 @@
     "node": ">=18.0.0"
   },
   "openclaw": {
-    "id": "aicq-chat",
-    "extensions": [
-      "./extension.js"
-    ],
+    "channel": {
+      "id": "aicq-chat",
+      "label": "AICQ Encrypted Chat",
+      "blurb": "端到端加密即时通讯频道，基于 NaCl (X25519 + XSalsa20-Poly1305)",
+      "icon": "🔐"
+    },
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2"
     }

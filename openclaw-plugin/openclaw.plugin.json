@@ -1,53 +1,64 @@
 {
+  "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "2.6.7",
-  "description": "End-to-end encrypted chat plugin for OpenClaw agents — Node.js implementation with full UI",
+  "version": "3.0.0",
+  "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin",
   "entry": "index.js",
   "activation": {
     "onStartup": true
   },
   "enabledByDefault": true,
+  "channels": ["aicq-chat"],
+  "channelConfigs": {
+    "aicq-chat": {
+      "accounts": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "description": "绑定到 OpenClaw 智能体的账户 ID",
+            "default": "{{agent.id}}"
+          },
+          "autoAcceptFriends": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否自动接受好友请求"
+          }
+        },
+        "required": ["accountId"]
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": {
-        "type": "boolean",
-        "description": "Enable the AICQ chat plugin (default: true).",
-        "default": true
+      "serverUrl": {
+        "type": "string",
+        "description": "AICQ 服务器地址",
+        "default": "https://aicq.online"
       },
-      "port": {
-        "type": "number",
-        "description": "Port for the AICQ sidecar server (default: 6109).",
-        "default": 6109,
-        "minimum": 1024,
-        "maximum": 65535
-      },
-      "autoStart": {
+      "autoAcceptFriends": {
         "type": "boolean",
-        "description": "Automatically start the sidecar server on gateway startup (default: true).",
+        "description": "自动接受好友请求",
         "default": true
       },
       "debug": {
         "type": "boolean",
-        "description": "Enable verbose debug logging (default: false).",
+        "description": "Enable verbose debug logging",
         "default": false
       }
     }
   },
   "uiHints": {
-    "enabled": {
-      "label": "Enable AICQ",
-      "help": "Toggle the AICQ encrypted chat plugin on or off."
+    "serverUrl": {
+      "label": "AICQ Server URL",
+      "help": "The AICQ signaling server URL for WebSocket connections."
     },
-    "port": {
-      "label": "Sidecar Port",
-      "help": "The port the AICQ sidecar server listens on."
-    },
-    "autoStart": {
-      "label": "Auto Start",
-      "help": "Start the AICQ server automatically when OpenClaw gateway starts."
+    "autoAcceptFriends": {
+      "label": "Auto Accept Friends",
+      "help": "Automatically accept incoming friend requests."
     },
     "debug": {
       "label": "Debug Mode",
@@ -85,19 +96,13 @@
       "aicq.groups.silent"
     ]
   },
-  "sidecar": {
-    "command": "node",
-    "args": [
-      "index.js"
-    ],
-    "port": 6109
-  },
   "runtime": "node",
   "requires": {
     "node": ">=18.0.0",
     "packages": [
       "sql.js",
       "tweetnacl",
+      "tweetnacl-util",
       "ws",
       "qrcode",
       "express"

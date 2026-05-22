@@ -1,28 +1,14 @@
 #!/usr/bin/env node
 /**
- * AICQ Chat Plugin — Post-install script
- *
- * Displays setup information after npm install.
+ * AICQ Chat Plugin — Post-install script (v3.0 Channel)
  */
-
 console.log('');
 console.log('  ╔══════════════════════════════════════════════╗');
-console.log('  ║       AICQ Chat Plugin Installed!            ║');
+console.log('  ║     AICQ Chat Plugin v3.0 Installed!        ║');
 console.log('  ╠══════════════════════════════════════════════╣');
-console.log('  ║                                              ║');
-console.log('  ║   Install via openclaw CLI:                  ║');
-console.log('  ║     openclaw plugins uninstall aicq-chat     ║');
-console.log('  ║     openclaw plugins install npm:aicq-chat-plugin ║');
-console.log('  ║     openclaw gateway restart                 ║');
-console.log('  ║                                              ║');
-console.log('  ║   Or start standalone:                       ║');
-console.log('  ║     aicq-plugin                              ║');
-console.log('  ║                                              ║');
-console.log('  ║   Options:                                   ║');
-console.log('  ║     --port <port>    Server port (6109)       ║');
-console.log('  ║     --server <url>   AICQ server URL         ║');
-console.log('  ║                                              ║');
-console.log('  ║   Chat UI: http://localhost:6109             ║');
-console.log('  ║   Docs: https://aicq.online                  ║');
+console.log('  ║   Architecture: Channel (in-process)         ║');
+console.log('  ║   Install: openclaw plugins install npm:aicq-chat-plugin ║');
+console.log('  ║   Restart: openclaw gateway restart          ║');
+console.log('  ║   UI: /plugins/aicq-chat/ui/                 ║');
 console.log('  ╚══════════════════════════════════════════════╝');
 console.log('');
