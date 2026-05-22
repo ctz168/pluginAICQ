@@ -1,0 +1,5 @@
+node_modules/
+.aicq-plugin/
+uploads/
+*.db
+*.log

@@ -1,0 +1,106 @@
+# 工作流: 公开仓 ctz168/pluginAICQ 发布流程
+# 1. 将测试域名 acer.tunnel.aicq.online 替换为正式域名 aicq.online
+# 2. 构建 openclaw-plugin (Python) 并发布到 PyPI
+# 3. 构建 plugin-js (Node.js) 并发布到 npm
+name: Build and Release Plugins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'openclaw-plugin/**'
+      - 'plugin-js/**'
+  workflow_dispatch:
+
+jobs:
+  release-python:
+    name: Build & Publish Python Plugin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Replace tunnel domain with production domain
+        run: |
+          # Replace acer.tunnel.aicq.online with aicq.online in all plugin source files
+          # This ensures the public release connects to the production server
+          find openclaw-plugin -type f \( -name "*.py" -o -name "*.json" -o -name "*.toml" -o -name "*.cfg" -o -name "*.txt" -o -name "*.md" \) -exec \
+            sed -i 's/acer\.tunnel\.aicq\.online/aicq.online/g' {} +
+
+          # Also replace in plugin-js if needed
+          find plugin-js -type f \( -name "*.js" -o -name "*.json" -o -name "*.md" \) -exec \
+            sed -i 's/acer\.tunnel\.aicq\.online/aicq.online/g' {} +
+
+          echo "Domain replacement complete"
+
+          # Verify no remaining tunnel references
+          if grep -r "acer\.tunnel\.aicq\.online" openclaw-plugin/ plugin-js/ 2>/dev/null; then
+            echo "WARNING: Still found acer.tunnel.aicq.online references!"
+            exit 1
+          else
+            echo "No tunnel domain references remaining - clean"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          pip install --upgrade pip
+          pip install build twine
+
+      - name: Build Python package
+        run: |
+          cd openclaw-plugin
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          cd openclaw-plugin
+          twine upload dist/* --skip-existing
+
+  release-npm:
+    name: Build & Publish Node.js Plugin
+    runs-on: ubuntu-latest
+    needs: []  # Run in parallel with Python release
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Replace tunnel domain with production domain
+        run: |
+          # Replace acer.tunnel.aicq.online with aicq.online in all JS source files
+          find plugin-js -type f \( -name "*.js" -o -name "*.json" -o -name "*.md" \) -exec \
+            sed -i 's/acer\.tunnel\.aicq\.online/aicq.online/g' {} +
+
+          echo "Domain replacement complete for plugin-js"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: |
+          cd plugin-js
+          npm ci
+
+      - name: Publish to npm
+        run: |
+          cd plugin-js
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,70 @@
+{
+  "name": "aicq-chat-plugin",
+  "version": "2.6.0",
+  "description": "AICQ End-to-end Encrypted Chat Plugin for OpenClaw — Full UI with friend management, group chat, file transfer, and AI agent communication",
+  "main": "index.js",
+  "bin": {
+    "aicq-plugin": "cli.js"
+  },
+  "files": [
+    "extension.js",
+    "index.js",
+    "cli.js",
+    "postinstall.js",
+    "lib/",
+    "public/",
+    "openclaw.plugin.json",
+    "SKILL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "node postinstall.js",
+    "install-deps": "npm install"
+  },
+  "keywords": [
+    "aicq",
+    "chat",
+    "encrypted",
+    "e2ee",
+    "openclaw",
+    "plugin",
+    "ai-agent",
+    "messaging",
+    "p2p"
+  ],
+  "author": "ctz168",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ctz168/aicq.git",
+    "directory": "plugin-js"
+  },
+  "bugs": {
+    "url": "https://github.com/ctz168/aicq/issues"
+  },
+  "homepage": "https://aicq.online",
+  "dependencies": {
+    "express": "^4.18.2",
+    "marked": "^12.0.0",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^2.7.0",
+    "qrcode": "^1.5.3",
+    "sql.js": "^1.14.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "openclaw": {
+    "id": "aicq-chat",
+    "extensions": [
+      "./extension.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2"
+    }
+  }
+}
