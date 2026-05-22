@@ -2,14 +2,16 @@
   "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin",
   "entry": "index.js",
   "activation": {
     "onStartup": true
   },
   "enabledByDefault": true,
-  "channels": ["aicq-chat"],
+  "channels": [
+    "aicq-chat"
+  ],
   "channelConfigs": {
     "aicq-chat": {
       "accounts": {
@@ -26,7 +28,9 @@
             "description": "是否自动接受好友请求"
           }
         },
-        "required": ["accountId"]
+        "required": [
+          "accountId"
+        ]
       }
     }
   },
