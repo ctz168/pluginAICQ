@@ -1,6 +1,6 @@
 {
   "name": "aicq-chat-plugin",
-  "version": "2.6.6",
+  "version": "2.6.7",
   "description": "AICQ End-to-end Encrypted Chat Plugin for OpenClaw — Full UI with friend management, group chat, file transfer, and AI agent communication",
   "main": "index.js",
   "bin": {
