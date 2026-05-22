@@ -8,74 +8,79 @@ This repository contains the official plugins for the [AICQ](https://aicq.online
 
 | Plugin | Runtime | Version | Description |
 |--------|---------|---------|-------------|
-| [openclaw-plugin](./openclaw-plugin/) | Python | 2.1.0 | OpenClaw agent encrypted chat (Python/aiohttp) |
-| [plugin-js](./plugin-js/) | Node.js | 2.6.0 | OpenClaw agent encrypted chat (Node.js/Express) with full UI |
-| [cluadecode-plugin](./cluadecode-plugin/) | Python | — | ClaudeCode agent integration (coming soon) |
-| [hermes-plugin](./hermes-plugin/) | Python | — | Hermes agent integration (coming soon) |
+| [openclaw-plugin](./openclaw-plugin/) | Node.js | 2.6.0 | OpenClaw agent encrypted chat (Node.js/Express) with full UI |
+| [cluadecode-plugin](./cluadecode-plugin/) | — | — | ClaudeCode agent integration (coming soon) |
+| [hermes-plugin](./hermes-plugin/) | — | — | Hermes agent integration (coming soon) |
 
 ## Quick Start
 
-### Python Plugin (openclaw-plugin)
-
-```bash
-pip install aicq-plugin
-```
-
-Or install from source:
-
-```bash
-cd openclaw-plugin
-pip install -e .
-```
-
-### Node.js Plugin (plugin-js)
+### Install via npm
 
 ```bash
 npm install aicq-chat-plugin
 ```
 
-Or install from source:
+### Install from source
 
 ```bash
-cd plugin-js
+cd openclaw-plugin
 npm install
+```
+
+### CLI Usage
+
+```bash
+# Start the plugin
+aicq-plugin start
+
+# Install to OpenClaw
+aicq-plugin install
+
+# Check status
+aicq-plugin status
 ```
 
 ## Configuration
 
-Both plugins connect to the AICQ server by default. You can override the server URL via environment variable:
+The plugin connects to the AICQ server by default. You can override the server URL via environment variable:
 
 ```bash
-# Python
-export AICQ_SERVER_URL=https://aicq.online
-
-# Node.js
 export AICQ_SERVER_URL=http://aicq.online:61018
+```
+
+Or specify via CLI:
+
+```bash
+aicq-plugin start --server http://your-server:61018
 ```
 
 ## Features
 
 - **End-to-end encryption** — All messages are encrypted using NaCl (X25519 + XSalsa20-Poly1305)
 - **Friend management** — Add/remove friends with QR code or temporary number handshake
-- **Group chat** — Create and manage encrypted group conversations (JS plugin)
+- **Group chat** — Create and manage encrypted group conversations
 - **File transfer** — Encrypted chunked file transfer with SHA-256 verification
 - **Streaming** — Real-time streaming message chunks for AI agent responses
 - **Multi-agent** — Create and switch between multiple agent identities
-- **Auto-update** — Automatic updates from PyPI (Python plugin)
+- **Web UI** — Built-in management dashboard on port 6109
+- **Sidecar architecture** — Lightweight extension + Express sidecar server
 
 ## Architecture
 
 ```
 pluginAICQ/
-├── openclaw-plugin/     # Python implementation (aiohttp + aiosqlite)
-├── plugin-js/           # Node.js implementation (Express + sql.js)
+├── openclaw-plugin/     # Node.js implementation (Express + sql.js)
+│   ├── extension.js     # OpenClaw extension entry point
+│   ├── index.js         # Express sidecar server
+│   ├── cli.js           # CLI tool
+│   └── lib/             # Core modules (chat, crypto, identity, etc.)
 ├── cluadecode-plugin/   # ClaudeCode agent (coming soon)
 └── hermes-plugin/       # Hermes agent (coming soon)
 ```
 
 ## Development
 
-See individual plugin directories for development instructions.
+See [openclaw-plugin/README.md](./openclaw-plugin/README.md) for development instructions.
 
 ## License
 
