@@ -42,17 +42,23 @@ aicq-plugin status
 
 ## Configuration
 
-The plugin connects to the AICQ server by default. You can override the server URL via environment variable:
+The plugin connects to the AICQ server via **HTTPS/WSS** (encrypted) by default. You can override the server URL via environment variable:
 
 ```bash
-export AICQ_SERVER_URL=http://aicq.online:61018
+# Default: connects to production server with TLS encryption
+export AICQ_SERVER_URL=https://aicq.online
+
+# For local development:
+export AICQ_SERVER_URL=http://localhost:61018
 ```
 
 Or specify via CLI:
 
 ```bash
-aicq-plugin start --server http://your-server:61018
+aicq-plugin start --server https://your-server.com
 ```
+
+> **Security Note**: Always use `https://` in production. The `http://` protocol should only be used for local development. All production connections use TLS encryption (HTTPS + WSS) to protect both transport-layer data (JWT tokens, handshake) and application-layer data (E2EE messages).
 
 ## Features
 

@@ -6,7 +6,7 @@ const fetch = require('node-fetch');
 const { signMessage, computeFingerprint } = require('./crypto');
 
 class ServerClient {
-  constructor(identityManager, db, serverUrl = 'http://aicq.online:61018') {
+  constructor(identityManager, db, serverUrl = 'https://aicq.online') {
     this.identity = identityManager;
     this.db = db;
     this.serverUrl = serverUrl;

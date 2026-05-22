@@ -17,7 +17,7 @@ const command = args[0] || 'start';
 
 // Parse options
 let port = process.env.AICQ_PORT || '6109';
-let serverUrl = process.env.AICQ_SERVER_URL || 'http://aicq.online:61018';
+let serverUrl = process.env.AICQ_SERVER_URL || 'https://aicq.online';
 
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) {
@@ -43,7 +43,7 @@ Commands:
 
 Options:
   --port, -p <port>       Plugin server port (default: 6109)
-  --server, -s <url>      AICQ server URL (default: http://aicq.online:61018)
+  --server, -s <url>      AICQ server URL (default: https://aicq.online)
   --help, -h              Show this help message
 
 Environment Variables:

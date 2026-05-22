@@ -24,7 +24,7 @@ const command = args[0] || 'start';
 
 // Parse options
 let port = process.env.AICQ_PORT || '6109';
-let serverUrl = process.env.AICQ_SERVER_URL || 'http://aicq.online:61018';
+let serverUrl = process.env.AICQ_SERVER_URL || 'https://aicq.online';
 
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) {
@@ -98,7 +98,7 @@ open http://localhost:6109
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | \`AICQ_PORT\` | 6109 | 插件服务端口 |
-| \`AICQ_SERVER_URL\` | http://aicq.online:61018 | AICQ 服务器地址 |
+| \`AICQ_SERVER_URL\` | https://aicq.online | AICQ 服务器地址 |
 | \`AICQ_DATA_DIR\` | ~/.aicq-plugin | 数据存储目录 |
 
 ## Chat UI
@@ -409,7 +409,7 @@ Commands:
 
 Options:
   --port, -p <port>       Plugin server port (default: 6109)
-  --server, -s <url>      AICQ server URL (default: http://aicq.online:61018)
+  --server, -s <url>      AICQ server URL (default: https://aicq.online)
   --help, -h              Show this help message
 
 Environment Variables:

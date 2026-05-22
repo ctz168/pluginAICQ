@@ -51,7 +51,7 @@ aicq-plugin status
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `AICQ_PORT` | 6109 | 插件服务端口 |
-| `AICQ_SERVER_URL` | http://aicq.online:61018 | AICQ 服务器地址 |
+| `AICQ_SERVER_URL` | https://aicq.online | AICQ 服务器地址 |
 | `AICQ_DATA_DIR` | ~/.aicq-plugin | 数据存储目录 |
 
 ## OpenClaw 集成

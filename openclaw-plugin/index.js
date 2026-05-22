@@ -15,7 +15,7 @@ const PluginDatabase = require('./lib/database');
 
 // ─── Configuration ──────────────────────────────────────────────────
 const PORT = parseInt(process.env.AICQ_PORT || '6109', 10);
-const SERVER_URL = process.env.AICQ_SERVER_URL || 'http://aicq.online:61018';
+const SERVER_URL = process.env.AICQ_SERVER_URL || 'https://aicq.online';
 const DATA_DIR = process.env.AICQ_DATA_DIR || path.join(os.homedir(), '.aicq-plugin');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
