@@ -37,11 +37,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ctz168/aicq.git",
-    "directory": "plugin-js"
+    "url": "git+https://github.com/ctz168/pluginAICQ.git",
+    "directory": "openclaw-plugin"
   },
   "bugs": {
-    "url": "https://github.com/ctz168/aicq/issues"
+    "url": "https://github.com/ctz168/pluginAICQ/issues"
   },
   "homepage": "https://aicq.online",
   "dependencies": {
