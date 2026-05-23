@@ -161,25 +161,24 @@ function register() {
 async function activate(config) {
   await ensureInitialized();
 
-  // Auto-create default agent if none exists
+  // Channel mode: do NOT auto-create a default agent identity.
+  // Agent identities are created on-demand via channel.lifecycle.onAccountCreate
+  // which is triggered when OpenClaw assigns an agent to this channel.
+  // The resolveAccount method also handles auto-creation if needed.
   const agents = _identity.listAgents();
-  let currentAgentId;
-  if (agents.length === 0) {
-    const defaultAgent = _identity.createAgent('agent-' + Date.now(), '默认Agent');
-    currentAgentId = defaultAgent.agent_id;
-    console.log('[AICQ Channel] Created default agent:', currentAgentId);
-  } else {
-    currentAgentId = agents[0].agent_id;
-  }
+  let currentAgentId = agents.length > 0 ? agents[0].agent_id : null;
 
-  // Connect to AICQ server
-  try {
-    await _serverClient.start(currentAgentId);
-    // Sync friends and groups from server
-    await syncFriendsFromServer(currentAgentId);
-    await syncGroupsFromServer(currentAgentId);
-  } catch (e) {
-    console.error('[AICQ Channel] Initial server connection failed:', e.message);
+  // Only connect to AICQ server if we have an existing agent
+  if (currentAgentId) {
+    try {
+      await _serverClient.start(currentAgentId);
+      await syncFriendsFromServer(currentAgentId);
+      await syncGroupsFromServer(currentAgentId);
+    } catch (e) {
+      console.error('[AICQ Channel] Initial server connection failed:', e.message);
+    }
+  } else {
+    console.log('[AICQ Channel] No existing agent — will connect when an agent is assigned via channel.lifecycle.onAccountCreate');
   }
 
   return {

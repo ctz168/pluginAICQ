@@ -12,8 +12,11 @@
   "channels": ["aicq-chat"],
   "channelConfigs": {
     "aicq-chat": {
+      "label": "AICQ Encrypted Chat",
+      "icon": "🔐",
       "accounts": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "accountId": {
             "type": "string",
