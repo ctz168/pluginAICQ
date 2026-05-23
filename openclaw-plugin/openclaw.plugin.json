@@ -2,14 +2,16 @@
   "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.0.0",
+  "version": "3.2.0",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin",
   "entry": "index.js",
   "activation": {
     "onStartup": true
   },
   "enabledByDefault": true,
-  "channels": ["aicq-chat"],
+  "channels": [
+    "aicq-chat"
+  ],
   "channelConfigs": {
     "aicq-chat": {
       "label": "AICQ Encrypted Chat",
@@ -43,10 +45,16 @@
             "type": "string",
             "default": "allowlist",
             "description": "DM access policy: allowlist (friends only), open, or disabled",
-            "enum": ["allowlist", "open", "disabled"]
+            "enum": [
+              "allowlist",
+              "open",
+              "disabled"
+            ]
           }
         },
-        "required": ["accountId"]
+        "required": [
+          "accountId"
+        ]
       },
       "uiHints": {
         "accountId": {
