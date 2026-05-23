@@ -2,21 +2,20 @@
   "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.1.0",
+  "version": "3.0.0",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin",
   "entry": "index.js",
   "activation": {
     "onStartup": true
   },
   "enabledByDefault": true,
-  "channels": [
-    "aicq-chat"
-  ],
+  "channels": ["aicq-chat"],
   "channelConfigs": {
     "aicq-chat": {
       "label": "AICQ Encrypted Chat",
-      "icon": "🔐",
-      "accounts": {
+      "description": "End-to-end encrypted chat channel via AICQ protocol",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -29,11 +28,43 @@
             "type": "boolean",
             "default": true,
             "description": "是否自动接受好友请求"
+          },
+          "serverUrl": {
+            "type": "string",
+            "description": "AICQ 服务器地址",
+            "default": "https://aicq.online"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable this channel account"
+          },
+          "dmPolicy": {
+            "type": "string",
+            "default": "allowlist",
+            "description": "DM access policy: allowlist (friends only), open, or disabled",
+            "enum": ["allowlist", "open", "disabled"]
           }
         },
-        "required": [
-          "accountId"
-        ]
+        "required": ["accountId"]
+      },
+      "uiHints": {
+        "accountId": {
+          "label": "Account ID",
+          "help": "The OpenClaw agent ID to bind as AICQ account"
+        },
+        "autoAcceptFriends": {
+          "label": "Auto Accept Friends",
+          "help": "Automatically accept incoming friend requests"
+        },
+        "serverUrl": {
+          "label": "AICQ Server URL",
+          "help": "The AICQ signaling server URL for WebSocket connections"
+        },
+        "dmPolicy": {
+          "label": "DM Policy",
+          "help": "Who can send direct messages: allowlist (friends only), open, or disabled"
+        }
       }
     }
   },
