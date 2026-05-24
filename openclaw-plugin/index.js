@@ -132,7 +132,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.2.0",
+        version: "3.6.0",
         architecture: "channel",
       };
     case "aicq.friends.list":
@@ -268,6 +268,11 @@ function registerCliMetadata(api) {
 
 // ── Full runtime registration ────────────────────────────────────────
 async function registerFull(api) {
+  // Expose ensureInitialized on the runtime store immediately so that
+  // startAccount (called by the channel loader) can trigger init even
+  // if no gateway method has been invoked yet.
+  runtime.ensureInitialized = ensureInitialized;
+
   // Register gateway RPC methods — each wraps handleGatewayMethod
   const GATEWAY_METHODS = [
     "aicq.status",

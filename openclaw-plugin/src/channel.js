@@ -122,8 +122,46 @@ const _plugin = createChatChannelPlugin({
     id: "aicq-chat",
 
     setup: {
-      resolveAccount,
-      inspectAccount,
+      /**
+       * Resolve the account ID from setup input.
+       * Called by the setup wizard when a user configures the channel.
+       */
+      resolveAccountId(params) {
+        const { cfg, accountId, input } = params;
+        return accountId || input?.accountId || resolveTemplateVar(cfg, "{{agent.id}}");
+      },
+
+      /**
+       * Apply the account config after the setup wizard completes.
+       * Must return the updated OpenClawConfig.
+       */
+      applyAccountConfig(params) {
+        const { cfg, accountId, input } = params;
+        const section = (cfg.channels || {})["aicq-chat"] || {};
+        return {
+          ...cfg,
+          channels: {
+            ...(cfg.channels || {}),
+            "aicq-chat": {
+              ...section,
+              accountId: accountId || input?.accountId || "{{agent.id}}",
+              serverUrl: input?.serverUrl || section.serverUrl || "https://aicq.online",
+              autoAcceptFriends: input?.autoAcceptFriends ?? section.autoAcceptFriends ?? true,
+              enabled: true,
+              dmPolicy: input?.dmPolicy || section.dmPolicy || "allowlist",
+              allowFrom: input?.allowFrom || section.allowFrom || [],
+            },
+          },
+        };
+      },
+
+      /**
+       * Validate setup input before applying.
+       * Return an error message string or null if valid.
+       */
+      validateInput(params) {
+        return null;
+      },
     },
 
     // Gateway method descriptors — these are the method names the plugin
@@ -236,7 +274,7 @@ _plugin.gateway = {
    * listening for inbound messages.
    */
   async startAccount(ctx) {
-    const { cfg, accountId, account, setStatus, log } = ctx;
+    const { cfg, accountId, account, setStatus, log, abortSignal } = ctx;
 
     const logger = log || console;
     logger.info?.(`[AICQ Channel] startAccount called for ${accountId}`) || console.log(`[AICQ Channel] startAccount called for ${accountId}`);
@@ -287,7 +325,6 @@ _plugin.gateway = {
         console.log(`[AICQ Channel] Authenticated as ${agentId}`);
 
         // Connect WebSocket for real-time messages
-        // ServerClient.start() does ensureAuth + connectWS
         if (typeof runtime.serverClient.start === "function") {
           await runtime.serverClient.start(agentId);
           console.log("[AICQ Channel] WebSocket connected");
@@ -316,7 +353,6 @@ _plugin.gateway = {
       if (reply && routing) {
         console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
 
-        // Register inbound message handler on the serverClient
         if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
           runtime.serverClient.onMessage(async (msg) => {
             try {
@@ -340,7 +376,6 @@ _plugin.gateway = {
                   cfg,
                   dispatcherOptions: {
                     deliver: async (payload) => {
-                      // Send AI reply back through AICQ
                       if (runtime.chat && payload.text) {
                         await runtime.chat.sendMessage(
                           resolvedAgentId,
@@ -374,6 +409,17 @@ _plugin.gateway = {
     });
 
     console.log(`[AICQ Channel] Account ${accountId} started successfully`);
+
+    // ── Keep startAccount alive until abort signal ──────────────────
+    // OpenClaw expects startAccount to be a long-lived task. If it
+    // resolves immediately, the gateway treats it as an unexpected
+    // exit and enters a restart loop. We wait on the abort signal.
+    await new Promise((resolve) => {
+      if (abortSignal?.aborted) { resolve(); return; }
+      const onAbort = () => { cleanup(); resolve(); };
+      const cleanup = () => { abortSignal?.removeEventListener("abort", onAbort); };
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+    });
   },
 
   /**
@@ -409,6 +455,8 @@ _plugin.config = {
   /**
    * List all account IDs configured for this channel.
    * Resolves template variables like {{agent.id}}.
+   *
+   * Signature: (cfg: OpenClawConfig) => string[]
    */
   listAccountIds(cfg) {
     const section = (cfg.channels || {})["aicq-chat"] || {};
@@ -421,17 +469,22 @@ _plugin.config = {
 
   /**
    * Resolve an account from config. Reuses the setup resolver.
+   *
+   * Signature: (cfg: OpenClawConfig, accountId?: string | null) => ResolvedAccount
    */
   resolveAccount,
 
   /**
    * Lightweight account inspection.
+   *
+   * Signature: (cfg: OpenClawConfig, accountId?: string | null) => unknown
    */
   inspectAccount,
 
   /**
    * Default account ID for this channel.
-   * Resolves {{agent.id}} to the actual agent ID.
+   *
+   * Signature: (cfg: OpenClawConfig) => string
    */
   defaultAccountId(cfg) {
     const section = (cfg.channels || {})["aicq-chat"] || {};
@@ -442,19 +495,39 @@ _plugin.config = {
   },
 
   /**
-   * Check if the channel is configured.
+   * Check if the account is enabled.
+   *
+   * IMPORTANT: OpenClaw calls this with (account, cfg) where `account`
+   * is the RESOLVED account object from resolveAccount(), not the config.
+   *
+   * Signature: (account: ResolvedAccount, cfg: OpenClawConfig) => boolean
    */
-  isConfigured(cfg) {
-    const section = (cfg.channels || {})["aicq-chat"] || {};
-    return Boolean(section.accountId);
+  isEnabled(account, cfg) {
+    return account.enabled !== false;
+  },
+
+  /**
+   * Check if the channel account is configured.
+   *
+   * IMPORTANT: OpenClaw calls this with (account, cfg) where `account`
+   * is the RESOLVED account object from resolveAccount(), not the config.
+   * Our old code had isConfigured(cfg) which received the account object
+   * as `cfg`, causing it to always return false — this was the root cause
+   * of the "not-running" bug.
+   *
+   * Signature: (account: ResolvedAccount, cfg: OpenClawConfig) => boolean
+   */
+  isConfigured(account, cfg) {
+    return Boolean(account && account.accountId);
   },
 
   /**
    * Return the reason the channel is not configured.
+   *
+   * Signature: (account: ResolvedAccount, cfg: OpenClawConfig) => string
    */
-  unconfiguredReason(cfg) {
-    const section = (cfg.channels || {})["aicq-chat"] || {};
-    if (!section.accountId) {
+  unconfiguredReason(account, cfg) {
+    if (!account || !account.accountId) {
       return "accountId is required — set channels.aicq-chat.accountId in openclaw.json";
     }
     return null;
@@ -462,14 +535,17 @@ _plugin.config = {
 
   /**
    * Describe the account for status surfaces.
+   *
+   * IMPORTANT: OpenClaw calls this with (account, cfg) where `account`
+   * is the RESOLVED account object, not the config.
+   *
+   * Signature: (account: ResolvedAccount, cfg: OpenClawConfig) => ChannelAccountSnapshot
    */
-  describeAccount(cfg, accountId) {
-    const section = (cfg.channels || {})["aicq-chat"] || {};
-    const rawId = accountId || section.accountId || null;
+  describeAccount(account, cfg) {
     return {
-      accountId: rawId ? resolveTemplateVar(cfg, rawId) : null,
+      accountId: account?.accountId || null,
       label: "AICQ Encrypted Chat",
-      enabled: section.enabled !== false,
+      enabled: account?.enabled !== false,
     };
   },
 };
