@@ -2,7 +2,7 @@
   "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.5.0",
+  "version": "3.5.2",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin using OpenClaw Channel SDK",
   "entry": "index.js",
   "activation": {
@@ -49,6 +49,14 @@
               "open",
               "disabled"
             ]
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "允许发消息的好友 ID 列表（dmPolicy 为 allowlist 时生效）"
           }
         },
         "required": [
@@ -71,6 +79,10 @@
         "dmPolicy": {
           "label": "DM Policy",
           "help": "Who can send direct messages: allowlist (friends only), open, or disabled"
+        },
+        "allowFrom": {
+          "label": "Allow From",
+          "help": "Friend IDs allowed to send DMs (used when dmPolicy is allowlist)"
         }
       }
     }

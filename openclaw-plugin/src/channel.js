@@ -35,18 +35,29 @@ export const runtime = {
 // ── Template variable resolver ───────────────────────────────────────
 // OpenClaw stores accountId as-is (e.g. "{{agent.id}}") in config.
 // Plugins must resolve template variables at runtime.
+//
+// The default agent ID in OpenClaw is "main" (DEFAULT_AGENT_ID).
+// When cfg.agents.list is empty/undefined (no explicit agent config),
+// the implicit default agent "main" is used.
+
+const OPENCLAW_DEFAULT_AGENT_ID = "main";
 
 function resolveTemplateVar(cfg, value) {
   if (typeof value !== "string") return value;
   const match = value.match(/^\{\{(\w[\w.]*)\}\}$/);
   if (!match) return value;
 
-  const path = match[1]; // e.g. "agent.id"
-  if (path === "agent.id") {
-    const agents = cfg.agents?.list || [];
-    if (agents.length > 0) return agents[0].id;
-    // Fallback: use the default agent ID from config
-    return cfg.agents?.defaultId || "default";
+  const tmplPath = match[1]; // e.g. "agent.id"
+  if (tmplPath === "agent.id") {
+    // Strategy: look for explicit agents in config first
+    const agents = cfg.agents?.list;
+    if (Array.isArray(agents) && agents.length > 0) {
+      // Use the default=true agent, or the first one
+      const defaultAgent = agents.find((a) => a.default) || agents[0];
+      if (defaultAgent?.id) return defaultAgent.id;
+    }
+    // Fallback: OpenClaw's implicit default agent ID
+    return OPENCLAW_DEFAULT_AGENT_ID;
   }
 
   return value; // unknown template — return as-is
@@ -74,13 +85,19 @@ function resolveAccount(cfg, accountId) {
   // Resolve template variables like {{agent.id}}
   const resolvedAccountId = resolveTemplateVar(cfg, rawAccountId);
 
+  // Resolve allowFrom entries (may contain {{agent.id}} or friend IDs)
+  const rawAllowFrom = section.allowFrom || [];
+  const resolvedAllowFrom = Array.isArray(rawAllowFrom)
+    ? rawAllowFrom.map((entry) => resolveTemplateVar(cfg, entry))
+    : rawAllowFrom;
+
   return {
     accountId: resolvedAccountId,
     serverUrl: section.serverUrl || "https://aicq.online",
     autoAcceptFriends: section.autoAcceptFriends ?? true,
     enabled: section.enabled ?? true,
     dmPolicy: section.dmPolicy || "allowlist",
-    allowFrom: section.allowFrom ?? [],
+    allowFrom: resolvedAllowFrom,
   };
 }
 
@@ -219,24 +236,46 @@ _plugin.gateway = {
    * listening for inbound messages.
    */
   async startAccount(ctx) {
-    const { cfg, accountId, account, setStatus } = ctx;
+    const { cfg, accountId, account, setStatus, log } = ctx;
 
-    console.log(`[AICQ Channel] startAccount called for ${accountId}`);
+    const logger = log || console;
+    logger.info?.(`[AICQ Channel] startAccount called for ${accountId}`) || console.log(`[AICQ Channel] startAccount called for ${accountId}`);
 
-    // Ensure the runtime (DB, identity, transport) is initialised
-    if (runtime.handleGateway) {
-      // Runtime already initialised via registerFull — just verify
+    // Ensure the runtime (DB, identity, transport) is initialised.
+    // The runtime is populated by registerFull() in index.js, but startAccount
+    // may be called before any gateway method is invoked, so we must ensure
+    // initialization here too.
+    if (!runtime._initialized && typeof runtime.ensureInitialized === "function") {
+      try {
+        await runtime.ensureInitialized();
+        logger.info?.("[AICQ Channel] Runtime initialized via startAccount") || console.log("[AICQ Channel] Runtime initialized via startAccount");
+      } catch (e) {
+        console.error("[AICQ Channel] Runtime initialization failed:", e.message);
+        setStatus({
+          accountId,
+          enabled: true,
+          configured: true,
+          running: false,
+          lastError: `Initialization failed: ${e.message}`,
+        });
+        return;
+      }
     }
 
-    // Resolve the agent ID from OpenClaw config
-    const agents = cfg.agents?.list || [];
-    const agentId = agents.length > 0 ? agents[0].id : accountId;
+    // Resolve the agent ID: prefer the resolved accountId from
+    // resolveAccount (which already handles {{agent.id}}), then
+    // fall back to the OpenClaw default agent ID.
+    const agents = cfg.agents?.list;
+    const agentId = account?.accountId || accountId || OPENCLAW_DEFAULT_AGENT_ID;
 
     // Ensure we have an identity in the plugin DB
     if (runtime.identity) {
       const existing = runtime.identity.listAgents();
       if (existing.length === 0) {
-        runtime.identity.createAgent(agentId, agents[0]?.name || "AICQ Agent");
+        const agentName = (Array.isArray(agents) && agents.length > 0 && agents[0]?.name)
+          ? agents[0].name
+          : "AICQ Agent";
+        runtime.identity.createAgent(agentId, agentName);
         console.log(`[AICQ Channel] Created agent identity: ${agentId}`);
       }
     }
@@ -248,9 +287,13 @@ _plugin.gateway = {
         console.log(`[AICQ Channel] Authenticated as ${agentId}`);
 
         // Connect WebSocket for real-time messages
-        if (typeof runtime.serverClient.connect === "function") {
-          await runtime.serverClient.connect(agentId);
+        // ServerClient.start() does ensureAuth + connectWS
+        if (typeof runtime.serverClient.start === "function") {
+          await runtime.serverClient.start(agentId);
           console.log("[AICQ Channel] WebSocket connected");
+        } else if (typeof runtime.serverClient.connectWS === "function") {
+          runtime.serverClient.connectWS();
+          console.log("[AICQ Channel] WebSocket connecting");
         }
 
         // Sync friends and groups from server
@@ -277,7 +320,7 @@ _plugin.gateway = {
         if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
           runtime.serverClient.onMessage(async (msg) => {
             try {
-              const resolvedAgentId = agents.length > 0 ? agents[0].id : accountId;
+              const resolvedAgentId = agentId;
               const routeResult = await routing.resolveAgentRoute({
                 channelId: "aicq-chat",
                 accountId,
@@ -340,9 +383,13 @@ _plugin.gateway = {
     const { accountId } = ctx;
     console.log(`[AICQ Channel] stopAccount called for ${accountId}`);
 
-    if (runtime.serverClient && typeof runtime.serverClient.disconnect === "function") {
+    if (runtime.serverClient) {
       try {
-        runtime.serverClient.disconnect();
+        if (typeof runtime.serverClient.stop === "function") {
+          runtime.serverClient.stop();
+        } else if (typeof runtime.serverClient.disconnect === "function") {
+          runtime.serverClient.disconnect();
+        }
         console.log("[AICQ Channel] WebSocket disconnected");
       } catch (e) {
         console.warn("[AICQ Channel] Disconnect error:", e.message);
@@ -391,7 +438,7 @@ _plugin.config = {
     if (section.accountId) {
       return resolveTemplateVar(cfg, section.accountId);
     }
-    return "default";
+    return OPENCLAW_DEFAULT_AGENT_ID;
   },
 
   /**

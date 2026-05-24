@@ -65,6 +65,7 @@ async function ensureInitialized() {
   runtime.dataDir = DATA_DIR;
   runtime.serverUrl = SERVER_URL;
   runtime.handleGateway = handleGatewayMethod;
+  runtime.ensureInitialized = ensureInitialized;
 
   // Periodic cleanup
   setInterval(() => _db.cleanup(), 3600000);
