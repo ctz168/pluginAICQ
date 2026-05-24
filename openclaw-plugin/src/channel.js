@@ -32,6 +32,26 @@ export const runtime = {
   _initialized: false,
 };
 
+// ── Template variable resolver ───────────────────────────────────────
+// OpenClaw stores accountId as-is (e.g. "{{agent.id}}") in config.
+// Plugins must resolve template variables at runtime.
+
+function resolveTemplateVar(cfg, value) {
+  if (typeof value !== "string") return value;
+  const match = value.match(/^\{\{(\w[\w.]*)\}\}$/);
+  if (!match) return value;
+
+  const path = match[1]; // e.g. "agent.id"
+  if (path === "agent.id") {
+    const agents = cfg.agents?.list || [];
+    if (agents.length > 0) return agents[0].id;
+    // Fallback: use the default agent ID from config
+    return cfg.agents?.defaultId || "default";
+  }
+
+  return value; // unknown template — return as-is
+}
+
 // ── Resolved account type ────────────────────────────────────────────
 // This is the object returned by resolveAccount() and consumed by
 // security / pairing / outbound adapters.
@@ -43,13 +63,16 @@ export const runtime = {
  */
 function resolveAccount(cfg, accountId) {
   const section = (cfg.channels || {})["aicq-chat"] || {};
-  const resolvedAccountId = accountId || section.accountId || null;
+  const rawAccountId = accountId || section.accountId || null;
 
-  if (!resolvedAccountId) {
+  if (!rawAccountId) {
     throw new Error(
       "aicq-chat: accountId is required (set channels.aicq-chat.accountId)"
     );
   }
+
+  // Resolve template variables like {{agent.id}}
+  const resolvedAccountId = resolveTemplateVar(cfg, rawAccountId);
 
   return {
     accountId: resolvedAccountId,
@@ -184,18 +207,167 @@ const _plugin = createChatChannelPlugin({
   },
 });
 
+// ── Gateway adapter: startAccount / stopAccount ───────────────────────
+// OpenClaw calls startAccount when the channel is activated (on startup
+// or when re-enabled).  This is where we initialise the runtime, connect
+// to the AICQ signalling server, and wire up inbound message delivery
+// via the channelRuntime helpers.
+
+_plugin.gateway = {
+  /**
+   * Start the channel account — connect to the AICQ server and begin
+   * listening for inbound messages.
+   */
+  async startAccount(ctx) {
+    const { cfg, accountId, account, setStatus } = ctx;
+
+    console.log(`[AICQ Channel] startAccount called for ${accountId}`);
+
+    // Ensure the runtime (DB, identity, transport) is initialised
+    if (runtime.handleGateway) {
+      // Runtime already initialised via registerFull — just verify
+    }
+
+    // Resolve the agent ID from OpenClaw config
+    const agents = cfg.agents?.list || [];
+    const agentId = agents.length > 0 ? agents[0].id : accountId;
+
+    // Ensure we have an identity in the plugin DB
+    if (runtime.identity) {
+      const existing = runtime.identity.listAgents();
+      if (existing.length === 0) {
+        runtime.identity.createAgent(agentId, agents[0]?.name || "AICQ Agent");
+        console.log(`[AICQ Channel] Created agent identity: ${agentId}`);
+      }
+    }
+
+    // Connect to the AICQ server
+    if (runtime.serverClient) {
+      try {
+        await runtime.serverClient.ensureAuth(agentId);
+        console.log(`[AICQ Channel] Authenticated as ${agentId}`);
+
+        // Connect WebSocket for real-time messages
+        if (typeof runtime.serverClient.connect === "function") {
+          await runtime.serverClient.connect(agentId);
+          console.log("[AICQ Channel] WebSocket connected");
+        }
+
+        // Sync friends and groups from server
+        if (runtime.handleGateway) {
+          try {
+            await runtime.handleGateway("aicq.friends.list", {});
+            await runtime.handleGateway("aicq.groups.list", {});
+          } catch (e) {
+            console.warn("[AICQ Channel] Initial sync failed:", e.message);
+          }
+        }
+      } catch (e) {
+        console.error("[AICQ Channel] Failed to connect:", e.message);
+      }
+    }
+
+    // Wire up inbound message handling via channelRuntime if available
+    if (ctx.channelRuntime) {
+      const { reply, routing } = ctx.channelRuntime;
+      if (reply && routing) {
+        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
+
+        // Register inbound message handler on the serverClient
+        if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
+          runtime.serverClient.onMessage(async (msg) => {
+            try {
+              const resolvedAgentId = agents.length > 0 ? agents[0].id : accountId;
+              const routeResult = await routing.resolveAgentRoute({
+                channelId: "aicq-chat",
+                accountId,
+                fromId: msg.from || msg.sender_id,
+                chatType: msg.isGroup ? "group" : "dm",
+              });
+
+              if (routeResult?.agentId) {
+                await reply.dispatchReplyWithBufferedBlockDispatcher({
+                  ctx: {
+                    channelId: "aicq-chat",
+                    accountId,
+                    fromId: msg.from || msg.sender_id,
+                    text: msg.content || msg.text || "",
+                    chatType: msg.isGroup ? "group" : "dm",
+                  },
+                  cfg,
+                  dispatcherOptions: {
+                    deliver: async (payload) => {
+                      // Send AI reply back through AICQ
+                      if (runtime.chat && payload.text) {
+                        await runtime.chat.sendMessage(
+                          resolvedAgentId,
+                          msg.from || msg.sender_id,
+                          payload.text,
+                          { isGroup: !!msg.isGroup }
+                        );
+                      }
+                    },
+                  },
+                });
+              }
+            } catch (e) {
+              console.error("[AICQ Channel] Inbound message handling error:", e.message);
+            }
+          });
+        }
+      }
+    } else {
+      console.log("[AICQ Channel] channelRuntime not available — running in standalone mode");
+    }
+
+    // Update health status
+    setStatus({
+      accountId,
+      enabled: true,
+      configured: true,
+      running: true,
+      lastStartAt: Date.now(),
+      lastError: null,
+    });
+
+    console.log(`[AICQ Channel] Account ${accountId} started successfully`);
+  },
+
+  /**
+   * Stop the channel account — disconnect and clean up.
+   */
+  async stopAccount(ctx) {
+    const { accountId } = ctx;
+    console.log(`[AICQ Channel] stopAccount called for ${accountId}`);
+
+    if (runtime.serverClient && typeof runtime.serverClient.disconnect === "function") {
+      try {
+        runtime.serverClient.disconnect();
+        console.log("[AICQ Channel] WebSocket disconnected");
+      } catch (e) {
+        console.warn("[AICQ Channel] Disconnect error:", e.message);
+      }
+    }
+  },
+};
+
 // ── Add config helpers (required by OpenClaw channel loader) ──────────
 // createChatChannelPlugin does not auto-attach config helpers,
 // but the OpenClaw loader requires plugin.config.listAccountIds
 // and plugin.config.resolveAccount for channel registration.
+
+// resolveTemplateVar is defined at the top of this file.
+
 _plugin.config = {
   /**
    * List all account IDs configured for this channel.
+   * Resolves template variables like {{agent.id}}.
    */
   listAccountIds(cfg) {
     const section = (cfg.channels || {})["aicq-chat"] || {};
     if (section.accountId) {
-      return [section.accountId];
+      const resolved = resolveTemplateVar(cfg, section.accountId);
+      return [resolved];
     }
     return [];
   },
@@ -209,6 +381,18 @@ _plugin.config = {
    * Lightweight account inspection.
    */
   inspectAccount,
+
+  /**
+   * Default account ID for this channel.
+   * Resolves {{agent.id}} to the actual agent ID.
+   */
+  defaultAccountId(cfg) {
+    const section = (cfg.channels || {})["aicq-chat"] || {};
+    if (section.accountId) {
+      return resolveTemplateVar(cfg, section.accountId);
+    }
+    return "default";
+  },
 
   /**
    * Check if the channel is configured.
@@ -234,8 +418,9 @@ _plugin.config = {
    */
   describeAccount(cfg, accountId) {
     const section = (cfg.channels || {})["aicq-chat"] || {};
+    const rawId = accountId || section.accountId || null;
     return {
-      accountId: accountId || section.accountId || null,
+      accountId: rawId ? resolveTemplateVar(cfg, rawId) : null,
       label: "AICQ Encrypted Chat",
       enabled: section.enabled !== false,
     };
