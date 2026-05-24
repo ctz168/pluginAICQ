@@ -3,193 +3,77 @@
  *
  * Architecture: Channel (in-process, no independent port)
  * - Runs inside the OpenClaw process
- * - Uses createChatChannelPlugin for E2EE chat channel
- * - Provides Gateway HTTP routes for the SPA UI
+ * - Uses defineChannelPluginEntry from the official Channel Plugin SDK
+ * - Provides Gateway RPC methods for the SPA UI and agent tools
  * - No sidecar process needed
+ *
+ * ESM module — this file IS the openclaw extension entry.
  */
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
 
-// ── Configuration ──────────────────────────────────────────────────
-const DATA_DIR = process.env.AICQ_DATA_DIR || path.join(os.homedir(), '.aicq-plugin');
-const SERVER_URL = process.env.AICQ_SERVER_URL || 'https://aicq.online';
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
+import { aicqChatPlugin, runtime } from "./src/channel.js";
+import { createRequire } from "module";
+import path from "path";
+import os from "os";
+import fs from "fs";
+
+// ── CJS interop — lib/ modules are CommonJS ──────────────────────────
+const require = createRequire(import.meta.url);
+
+// ── Configuration ────────────────────────────────────────────────────
+const DATA_DIR = process.env.AICQ_DATA_DIR || path.join(os.homedir(), ".aicq-plugin");
+const SERVER_URL = process.env.AICQ_SERVER_URL || "https://aicq.online";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// ── Lazy-loaded modules (require db init) ──────────────────────────
+// ── Lazy-loaded CJS modules (need async db init) ────────────────────
 let _db = null;
 let _identity = null;
 let _serverClient = null;
 let _handshake = null;
 let _chat = null;
-let _channel = null;
-let _uiRoutes = null;
-let _initialized = false;
 
 /**
- * Initialize all plugin components (async, called once)
+ * Initialize all plugin components (async, called once from registerFull).
  */
 async function ensureInitialized() {
-  if (_initialized) return;
+  if (runtime._initialized) return;
 
-  const PluginDatabase = require('./lib/database');
-  const IdentityManager = require('./lib/identity');
-  const ServerClient = require('./lib/server-client');
-  const HandshakeManager = require('./lib/handshake');
-  const ChatManager = require('./lib/chat');
+  const PluginDatabase = require("./lib/database");
+  const IdentityManager = require("./lib/identity");
+  const ServerClient = require("./lib/server-client");
+  const HandshakeManager = require("./lib/handshake");
+  const ChatManager = require("./lib/chat");
 
   // Initialize database
   _db = new PluginDatabase(DATA_DIR);
   await _db.init();
-  console.log('[AICQ Channel] Database initialized');
+  console.log("[AICQ Channel] Database initialized");
 
   // Initialize managers
   _identity = new IdentityManager(_db);
   _serverClient = new ServerClient(_identity, _db, SERVER_URL);
   _handshake = new HandshakeManager(_identity, _serverClient, _db);
-  _chat = new ChatManager(_identity, _serverClient, _db, path.join(DATA_DIR, 'uploads'));
+  _chat = new ChatManager(_identity, _serverClient, _db, path.join(DATA_DIR, "uploads"));
 
-  // Load channel and UI route creators
-  const { createAicqChannel } = require('./src/channel');
-  const { createUiRoutes } = require('./src/ui-routes');
-
-  _channel = createAicqChannel({
-    db: _db,
-    identity: _identity,
-    serverClient: _serverClient,
-    handshake: _handshake,
-    chat: _chat,
-    dataDir: DATA_DIR,
-    serverUrl: SERVER_URL,
-  });
-
-  _uiRoutes = createUiRoutes({
-    db: _db,
-    identity: _identity,
-    serverClient: _serverClient,
-    handshake: _handshake,
-    chat: _chat,
-    dataDir: DATA_DIR,
-  });
+  // Populate the shared runtime store so channel adapters can use it
+  runtime.db = _db;
+  runtime.identity = _identity;
+  runtime.serverClient = _serverClient;
+  runtime.handshake = _handshake;
+  runtime.chat = _chat;
+  runtime.dataDir = DATA_DIR;
+  runtime.serverUrl = SERVER_URL;
+  runtime.handleGateway = handleGatewayMethod;
 
   // Periodic cleanup
   setInterval(() => _db.cleanup(), 3600000);
 
-  _initialized = true;
-  console.log('[AICQ Channel] Plugin components initialized');
+  runtime._initialized = true;
+  console.log("[AICQ Channel] Plugin runtime initialized");
 }
 
-// ── register() — Called by OpenClaw when the plugin is discovered ────
-function register() {
-  return {
-    id: 'aicq-chat',
-    name: 'AICQ Encrypted Chat',
-    version: '3.0.0',
-    description: 'End-to-end encrypted chat channel plugin for OpenClaw agents',
-    kind: 'channel',
-
-    // Channel configuration
-    channel: {
-      id: 'aicq-chat',
-      label: 'AICQ Encrypted Chat',
-    },
-
-    // Tool definitions for OpenClaw agent use
-    tools: {
-      'chat-friend': {
-        description: 'Manage AICQ friends — list, add by friend code, remove, view requests, accept/reject requests',
-        parameters: {
-          type: 'object',
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['list', 'add', 'remove', 'requests', 'accept', 'reject'],
-              description: 'The friend management action to perform',
-            },
-            friend_code: {
-              type: 'string',
-              description: 'Friend code or temp number for adding a friend',
-            },
-            friend_id: {
-              type: 'string',
-              description: 'Friend ID for remove/accept/reject actions',
-            },
-          },
-          required: ['action'],
-        },
-      },
-      'chat-send': {
-        description: 'Send an encrypted message to a friend or group via AICQ',
-        parameters: {
-          type: 'object',
-          properties: {
-            targetId: {
-              type: 'string',
-              description: 'The friend ID or group ID to send the message to',
-            },
-            content: {
-              type: 'string',
-              description: 'The message content to send',
-            },
-            isGroup: {
-              type: 'boolean',
-              description: 'Whether the target is a group (default: false)',
-            },
-          },
-          required: ['targetId', 'content'],
-        },
-      },
-      'chat-export-key': {
-        description: 'Export your AICQ identity public key and fingerprint for sharing',
-        parameters: {
-          type: 'object',
-          properties: {
-            format: {
-              type: 'string',
-              enum: ['json', 'qr'],
-              description: 'Output format: json for key data, qr for QR code image (default: json)',
-            },
-          },
-        },
-      },
-    },
-  };
-}
-
-// ── activate() — Called by OpenClaw when the plugin is enabled ───────
-async function activate(config) {
-  await ensureInitialized();
-
-  // Channel mode: do NOT auto-create a default agent identity.
-  // Agent identities are created on-demand via channel.lifecycle.onAccountCreate
-  // which is triggered when OpenClaw assigns an agent to this channel.
-  // The resolveAccount method also handles auto-creation if needed.
-  const agents = _identity.listAgents();
-  let currentAgentId = agents.length > 0 ? agents[0].agent_id : null;
-
-  // Only connect to AICQ server if we have an existing agent
-  if (currentAgentId) {
-    try {
-      await _serverClient.start(currentAgentId);
-      await syncFriendsFromServer(currentAgentId);
-      await syncGroupsFromServer(currentAgentId);
-    } catch (e) {
-      console.error('[AICQ Channel] Initial server connection failed:', e.message);
-    }
-  } else {
-    console.log('[AICQ Channel] No existing agent — will connect when an agent is assigned via channel.lifecycle.onAccountCreate');
-  }
-
-  return {
-    handleTool,
-    handleGateway,
-    channel: _channel,
-    gatewayRoutes: _uiRoutes,
-  };
-}
-
-// ── Sync helpers ────────────────────────────────────────────────────
+// ── Sync helpers ─────────────────────────────────────────────────────
 async function syncFriendsFromServer(agentId) {
   try {
     await _serverClient.ensureAuth(agentId);
@@ -201,10 +85,10 @@ async function syncFriendsFromServer(agentId) {
           _db.addFriend({
             agent_id: agentId,
             id: f.id,
-            public_key: f.public_key || f.publicKey || '',
-            fingerprint: f.fingerprint || '',
-            friend_type: f.type || f.friend_type || 'ai',
-            ai_name: f.agent_name || f.ai_name || f.displayName || '',
+            public_key: f.public_key || f.publicKey || "",
+            fingerprint: f.fingerprint || "",
+            friend_type: f.type || f.friend_type || "ai",
+            ai_name: f.agent_name || f.ai_name || f.displayName || "",
           });
         } else {
           _db.updateFriendOnline(agentId, f.id, f.is_online || f.isOnline || false);
@@ -212,7 +96,7 @@ async function syncFriendsFromServer(agentId) {
       }
     }
   } catch (e) {
-    console.error('[AICQ Channel] Sync friends failed:', e.message);
+    console.error("[AICQ Channel] Sync friends failed:", e.message);
   }
 }
 
@@ -226,132 +110,110 @@ async function syncGroupsFromServer(agentId) {
           agent_id: agentId,
           id: g.id,
           name: g.name,
-          owner_id: g.owner_id || g.ownerId || '',
-          members_json: g.members || g.members_json || '[]',
-          description: g.description || '',
+          owner_id: g.owner_id || g.ownerId || "",
+          members_json: g.members || g.members_json || "[]",
+          description: g.description || "",
         });
       }
     }
   } catch (e) {
-    console.error('[AICQ Channel] Sync groups failed:', e.message);
+    console.error("[AICQ Channel] Sync groups failed:", e.message);
   }
 }
 
-// ── Tool handler ────────────────────────────────────────────────────
-async function handleTool(toolName, params) {
-  await ensureInitialized();
-  const agents = _identity.listAgents();
-  const currentAgentId = agents.length > 0 ? agents[0].agent_id : null;
-
-  switch (toolName) {
-    case 'chat-friend': {
-      const { action, friend_code, friend_id } = params || {};
-      switch (action) {
-        case 'list':
-          return { friends: _db.listFriends(currentAgentId) };
-        case 'add':
-          return await _handshake.addFriendByCode(currentAgentId, friend_code);
-        case 'remove':
-          _db.removeFriend(currentAgentId, friend_id);
-          try { await _serverClient.removeFriend(friend_id); } catch (e) {}
-          return { success: true };
-        case 'requests':
-          return { requests: _db.getPendingRequests(currentAgentId) };
-        case 'accept':
-          return await _handshake.acceptRequest(currentAgentId, friend_id);
-        case 'reject':
-          return await _handshake.rejectRequest(currentAgentId, friend_id);
-        default:
-          return { error: `Unknown friend action: ${action}` };
-      }
-    }
-    case 'chat-send':
-      return await _chat.sendMessage(
-        currentAgentId,
-        params.targetId,
-        params.content,
-        { isGroup: params.isGroup || false }
-      );
-    case 'chat-export-key':
-      return _identity.getInfo(currentAgentId) || {};
-    default:
-      return { error: `Unknown tool: ${toolName}` };
-  }
-}
-
-// ── Gateway handler ─────────────────────────────────────────────────
-async function handleGateway(method, kwargs = {}) {
-  await ensureInitialized();
+// ── Gateway method handler ───────────────────────────────────────────
+async function handleGatewayMethod(method, kwargs = {}) {
   const agents = _identity.listAgents();
   const currentAgentId = agents.length > 0 ? agents[0].agent_id : null;
 
   switch (method) {
-    case 'aicq.status':
+    case "aicq.status":
       return {
-        state: _serverClient.connected ? 'connected' : 'disconnected',
+        state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: '3.0.0',
-        architecture: 'channel',
+        version: "3.2.0",
+        architecture: "channel",
       };
-    case 'aicq.friends.list':
+    case "aicq.friends.list":
       return { friends: _db.listFriends(currentAgentId) };
-    case 'aicq.friends.add':
+    case "aicq.friends.add":
       return await _handshake.addFriendByCode(currentAgentId, kwargs.temp_number);
-    case 'aicq.friends.remove':
+    case "aicq.friends.remove":
       _db.removeFriend(currentAgentId, kwargs.friend_id);
       return { success: true };
-    case 'aicq.friends.requests':
+    case "aicq.friends.requests":
       return { requests: _db.getPendingRequests(currentAgentId) };
-    case 'aicq.friends.acceptRequest':
+    case "aicq.friends.acceptRequest":
       return await _handshake.acceptRequest(currentAgentId, kwargs.request_id);
-    case 'aicq.friends.rejectRequest':
+    case "aicq.friends.rejectRequest":
       return await _handshake.rejectRequest(currentAgentId, kwargs.request_id);
-    case 'aicq.identity.info':
+    case "aicq.identity.info":
       return _identity.getInfo(currentAgentId) || {};
-    case 'aicq.agent.create':
+    case "aicq.agent.create":
       _identity.createAgent(kwargs.agent_id, kwargs.nickname);
       return { success: true };
-    case 'aicq.agent.delete':
+    case "aicq.agent.delete":
       _identity.deleteAgent(kwargs.agent_id);
       return { success: true };
-    case 'aicq.chat.send':
-      return await _chat.sendMessage(currentAgentId, kwargs.targetId, kwargs.content, { isGroup: kwargs.isGroup });
-    case 'aicq.chat.history':
-      return { messages: _db.getChatHistory(currentAgentId, kwargs.targetId, { limit: kwargs.limit || 50 }) };
-    case 'aicq.chat.delete':
+    case "aicq.chat.send":
+      return await _chat.sendMessage(currentAgentId, kwargs.targetId, kwargs.content, {
+        isGroup: kwargs.isGroup,
+      });
+    case "aicq.chat.history":
+      return {
+        messages: _db.getChatHistory(currentAgentId, kwargs.targetId, {
+          limit: kwargs.limit || 50,
+        }),
+      };
+    case "aicq.chat.delete":
       _db.deleteMessage(currentAgentId, kwargs.message_id);
       return { success: true };
-    case 'aicq.chat.streamChunk': {
-      if (!kwargs.friend_id && !kwargs.targetId) return { error: 'friend_id or targetId is required' };
-      if (!kwargs.data) return { error: 'data is required' };
-      const chunkType = kwargs.chunk_type || kwargs.chunkType || 'text';
-      const ALLOWED_CHUNK_TYPES = ['text', 'reasoning', 'thinking', 'clear_text', 'tool_call', 'tool_result'];
-      if (!ALLOWED_CHUNK_TYPES.includes(chunkType)) return { error: `Invalid chunk_type: ${chunkType}. Allowed: ${ALLOWED_CHUNK_TYPES.join(', ')}` };
+    case "aicq.chat.streamChunk": {
+      if (!kwargs.friend_id && !kwargs.targetId)
+        return { error: "friend_id or targetId is required" };
+      if (!kwargs.data) return { error: "data is required" };
+      const chunkType = kwargs.chunk_type || kwargs.chunkType || "text";
+      const ALLOWED_CHUNK_TYPES = [
+        "text",
+        "reasoning",
+        "thinking",
+        "clear_text",
+        "tool_call",
+        "tool_result",
+      ];
+      if (!ALLOWED_CHUNK_TYPES.includes(chunkType))
+        return {
+          error: `Invalid chunk_type: ${chunkType}. Allowed: ${ALLOWED_CHUNK_TYPES.join(", ")}`,
+        };
       const streamTarget = kwargs.friend_id || kwargs.targetId;
       const sent = _serverClient.sendWS({
-        type: 'stream_chunk',
+        type: "stream_chunk",
         to: streamTarget,
-        chunkType: chunkType,
+        chunkType,
         data: kwargs.data,
       });
-      if (!sent) return { error: 'Not connected to server', success: false };
+      if (!sent) return { error: "Not connected to server", success: false };
       return { success: true };
     }
-    case 'aicq.chat.streamEnd': {
-      if (!kwargs.friend_id && !kwargs.targetId) return { error: 'friend_id or targetId is required' };
+    case "aicq.chat.streamEnd": {
+      if (!kwargs.friend_id && !kwargs.targetId)
+        return { error: "friend_id or targetId is required" };
       const endTarget = kwargs.friend_id || kwargs.targetId;
-      const msgId = kwargs.message_id || kwargs.messageId || ('msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
+      const msgId =
+        kwargs.message_id ||
+        kwargs.messageId ||
+        "msg_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
       const endSent = _serverClient.sendWS({
-        type: 'stream_end',
+        type: "stream_end",
         to: endTarget,
         messageId: msgId,
       });
-      if (!endSent) return { error: 'Not connected to server', success: false };
+      if (!endSent) return { error: "Not connected to server", success: false };
       return { success: true, messageId: msgId };
     }
-    case 'aicq.groups.list':
+    case "aicq.groups.list":
       return { groups: _db.listGroups(currentAgentId) };
-    case 'aicq.groups.create': {
+    case "aicq.groups.create": {
       await _serverClient.ensureAuth(currentAgentId);
       const result = await _serverClient.createGroup(kwargs.name, kwargs.description);
       if (result.id) {
@@ -360,34 +222,106 @@ async function handleGateway(method, kwargs = {}) {
           id: result.id,
           name: kwargs.name,
           owner_id: currentAgentId,
-          members_json: result.members || '[]',
-          description: kwargs.description || '',
+          members_json: result.members || "[]",
+          description: kwargs.description || "",
         });
       }
       return { success: true, group: result };
     }
-    case 'aicq.groups.join':
+    case "aicq.groups.join":
       await _serverClient.ensureAuth(currentAgentId);
       return await _serverClient.inviteGroupMember(kwargs.group_id, currentAgentId);
-    case 'aicq.groups.messages': {
+    case "aicq.groups.messages": {
       await _serverClient.ensureAuth(currentAgentId);
       return await _serverClient.getGroupMessages(kwargs.group_id, kwargs.limit || 50);
     }
-    case 'aicq.groups.silent':
+    case "aicq.groups.silent":
       _db.setGroupSilentMode(currentAgentId, kwargs.group_id, !!kwargs.silent);
       return { success: true, silent: !!kwargs.silent };
-    case 'aicq.sessions.list':
+    case "aicq.sessions.list":
       return { sessions: [] };
     default:
       return { error: `Unknown method: ${method}` };
   }
 }
 
-// ── Exports ─────────────────────────────────────────────────────────
-module.exports = {
-  register,
-  activate,
-  handleTool,
-  handleGateway,
-  ensureInitialized,
-};
+// ── CLI metadata registration (lightweight, no runtime init) ─────────
+function registerCliMetadata(api) {
+  api.registerCli(
+    ({ program }) => {
+      program
+        .command("aicq-chat")
+        .description("AICQ Encrypted Chat management");
+    },
+    {
+      descriptors: [
+        {
+          name: "aicq-chat",
+          description: "AICQ Encrypted Chat management",
+          hasSubcommands: false,
+        },
+      ],
+    }
+  );
+}
+
+// ── Full runtime registration ────────────────────────────────────────
+async function registerFull(api) {
+  // Register gateway RPC methods — each wraps handleGatewayMethod
+  const GATEWAY_METHODS = [
+    "aicq.status",
+    "aicq.friends.list",
+    "aicq.friends.add",
+    "aicq.friends.remove",
+    "aicq.friends.requests",
+    "aicq.friends.acceptRequest",
+    "aicq.friends.rejectRequest",
+    "aicq.identity.info",
+    "aicq.agent.create",
+    "aicq.agent.delete",
+    "aicq.chat.send",
+    "aicq.chat.history",
+    "aicq.chat.delete",
+    "aicq.chat.streamChunk",
+    "aicq.chat.streamEnd",
+    "aicq.groups.list",
+    "aicq.groups.create",
+    "aicq.groups.join",
+    "aicq.groups.messages",
+    "aicq.groups.silent",
+    "aicq.sessions.list",
+  ];
+
+  for (const method of GATEWAY_METHODS) {
+    api.registerGatewayMethod(method, async (opts) => {
+      try {
+        await ensureInitialized();
+        const result = await handleGatewayMethod(method, opts.params || {});
+        opts.respond(true, result);
+      } catch (e) {
+        opts.respond(false, undefined, { message: e.message, code: "AICQ_ERROR" });
+      }
+    });
+  }
+
+  // Register HTTP routes for the SPA UI and REST API.
+  // Lazy-loaded to keep the entry narrow — the ui-routes module pulls in
+  // qrcode and multer which are not needed during setup-only registration.
+  try {
+    const { registerHttpRoutes } = await import("./src/ui-routes.js");
+    registerHttpRoutes(api, { ensureInitialized, runtime, DATA_DIR, SERVER_URL });
+  } catch (e) {
+    console.error("[AICQ Channel] Failed to register HTTP routes:", e.message);
+  }
+}
+
+// ── Export the entry point ───────────────────────────────────────────
+export default defineChannelPluginEntry({
+  id: "aicq-chat",
+  name: "AICQ Encrypted Chat",
+  description:
+    "End-to-end encrypted chat channel plugin for OpenClaw agents — NaCl (X25519 + XSalsa20-Poly1305)",
+  plugin: aicqChatPlugin,
+  registerCliMetadata,
+  registerFull,
+});

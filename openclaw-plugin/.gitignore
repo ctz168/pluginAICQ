@@ -3,3 +3,4 @@ node_modules/
 uploads/
 *.db
 *.log
+aicq-chat-plugin-*.tgz

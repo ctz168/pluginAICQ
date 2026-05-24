@@ -1,163 +1,245 @@
 /**
  * AICQ Channel Plugin — Core Channel Logic
  *
- * Wraps existing lib/ modules (identity, server-client, handshake, chat, database)
- * into the OpenClaw Channel plugin interface via createChatChannelPlugin.
+ * Uses the official OpenClaw Channel Plugin SDK:
+ *   createChatChannelPlugin + createChannelPluginBase
  *
  * Architecture: In-process Channel (no sidecar, no independent port)
+ *
+ * The runtime store is a mutable object populated by registerFull() in
+ * index.js. This keeps the channel-plugin object safe to import during
+ * setup-only / discovery modes without pulling in transport clients or
+ * database handles.
  */
-const { encryptMessage, decryptMessage, deriveSessionKey, computeFingerprint } = require('../lib/crypto');
+
+import {
+  createChatChannelPlugin,
+  createChannelPluginBase,
+} from "openclaw/plugin-sdk/channel-core";
+
+// ── Mutable runtime store ────────────────────────────────────────────
+// Populated lazily by the registerFull() callback in index.js.
+// Adapters that need runtime state check these before acting.
+export const runtime = {
+  db: null,
+  identity: null,
+  serverClient: null,
+  handshake: null,
+  chat: null,
+  dataDir: null,
+  serverUrl: null,
+  handleGateway: null,
+  _initialized: false,
+};
+
+// ── Resolved account type ────────────────────────────────────────────
+// This is the object returned by resolveAccount() and consumed by
+// security / pairing / outbound adapters.
 
 /**
- * Create the AICQ channel plugin
- * @param {Object} ctx - Plugin context with managers and config
+ * Read the AICQ channel section from OpenClaw config and return a typed
+ * account object.  This is the setup-safe resolver — no network or DB
+ * side effects.
  */
-function createAicqChannel(ctx) {
-  const { db, identity, serverClient, handshake, chat, dataDir, serverUrl } = ctx;
+function resolveAccount(cfg, accountId) {
+  const section = (cfg.channels || {})["aicq-chat"] || {};
+  const resolvedAccountId = accountId || section.accountId || null;
+
+  if (!resolvedAccountId) {
+    throw new Error(
+      "aicq-chat: accountId is required (set channels.aicq-chat.accountId)"
+    );
+  }
 
   return {
-    // ── Account Resolution ──
-    resolveAccount: async (agentId) => {
-      // Use OpenClaw agent ID directly as AICQ account ID
-      let agentIdentity = identity.loadAgent(agentId);
-      if (!agentIdentity) {
-        agentIdentity = identity.createAgent(agentId, `agent-${agentId.slice(0, 8)}`);
-      }
-      return {
-        accountId: agentId,
-        displayName: agentIdentity.nickname || `agent-${agentId.slice(0, 8)}`,
-        metadata: {
-          publicKey: agentIdentity.signing_public_key,
-          exchangePublicKey: agentIdentity.exchange_public_key,
-          fingerprint: agentIdentity.fingerprint,
-        },
-      };
-    },
-
-    // ── DM Security Policy ──
-    security: {
-      dm: {
-        allowFrom: async (accountId, peerId) => {
-          // Only friends in the contact list can send DMs
-          return db.isFriend ? db.isFriend(accountId, peerId) : !!db.getFriend(accountId, peerId);
-        },
-      },
-    },
-
-    // ── Friend Pairing ──
-    pairing: {
-      text: async (accountId) => {
-        try {
-          await serverClient.ensureAuth(accountId);
-          const result = await handshake.generateFriendCode(accountId);
-          const code = result.number;
-          return {
-            code,
-            instructions: `Share this pairing code with the other party: ${code}. They can add you using the chat-friend tool's add action.`,
-          };
-        } catch (e) {
-          // Fallback: use public key prefix as pairing code
-          const info = identity.getInfo(accountId);
-          const code = info ? info.exchange_public_key.slice(0, 16) : 'error';
-          return {
-            code,
-            instructions: `Share this pairing code with the other party: ${code}`,
-          };
-        }
-      },
-      verify: async (accountId, peerCode) => {
-        try {
-          const result = await handshake.addFriendByCode(accountId, peerCode);
-          return { success: true, peerId: result.peer_id || result.friend_id || peerCode };
-        } catch (e) {
-          return { success: false, error: e.message };
-        }
-      },
-    },
-
-    // ── Inbound Message Processing ──
-    inbound: {
-      onText: async (message) => {
-        const { toAccountId, fromPeerId, encryptedContent } = message;
-
-        // Try to decrypt if we have a session key
-        let content = encryptedContent || message.content || message.payload || '';
-        const session = db.loadSession(toAccountId, fromPeerId);
-        if (session && session.session_key && typeof content === 'string') {
-          try {
-            content = decryptMessage(content, session.session_key);
-          } catch (e) {
-            // Might be plaintext, keep as is
-          }
-        }
-
-        return {
-          text: typeof content === 'string' ? content : JSON.stringify(content),
-          metadata: {
-            fromPeerId,
-            timestamp: message.timestamp,
-          },
-        };
-      },
-      onMedia: async (message) => {
-        const keys = identity.loadAgent(message.toAccountId);
-        let content = message.encryptedContent || message.content || '';
-        const session = db.loadSession(message.toAccountId, message.fromPeerId);
-        if (session && session.session_key && typeof content === 'string') {
-          try {
-            content = decryptMessage(content, session.session_key);
-          } catch (e) {}
-        }
-        return {
-          mediaUrl: content,
-          mediaType: message.mediaType || 'file',
-          metadata: { fromPeerId: message.fromPeerId },
-        };
-      },
-    },
-
-    // ── Outbound Message Processing ──
-    outbound: {
-      sendText: async (fromAccountId, toPeerId, text) => {
-        const result = await chat.sendMessage(fromAccountId, toPeerId, text, { isGroup: false });
-        return result;
-      },
-      sendMedia: async (fromAccountId, toPeerId, mediaUrl, mediaType) => {
-        const result = await chat.sendMessage(fromAccountId, toPeerId, mediaUrl, {
-          type: mediaType || 'file',
-          isGroup: false,
-        });
-        return result;
-      },
-    },
-
-    // ── Lifecycle ──
-    lifecycle: {
-      onAccountCreate: async (accountId) => {
-        let agentIdentity = identity.loadAgent(accountId);
-        if (!agentIdentity) {
-          agentIdentity = identity.createAgent(accountId, `agent-${accountId.slice(0, 8)}`);
-        }
-        try {
-          await serverClient.start(accountId);
-        } catch (e) {
-          console.error('[AICQ Channel] Server connection failed for account:', accountId, e.message);
-        }
-      },
-      onAccountDelete: async (accountId) => {
-        try {
-          serverClient.disconnect();
-        } catch (e) {}
-        identity.deleteAgent(accountId);
-      },
-      onShutdown: async () => {
-        try {
-          serverClient.stop();
-        } catch (e) {}
-        console.log('[AICQ Channel] Shutdown complete');
-      },
-    },
+    accountId: resolvedAccountId,
+    serverUrl: section.serverUrl || "https://aicq.online",
+    autoAcceptFriends: section.autoAcceptFriends ?? true,
+    enabled: section.enabled ?? true,
+    dmPolicy: section.dmPolicy || "allowlist",
+    allowFrom: section.allowFrom ?? [],
   };
 }
 
-module.exports = { createAicqChannel };
+/**
+ * Lightweight account inspection for status / health / setup surfaces.
+ * Must not materialise secrets or start transports.
+ */
+function inspectAccount(cfg, accountId) {
+  const section = (cfg.channels || {})["aicq-chat"] || {};
+  const hasAccountId = Boolean(section.accountId || accountId);
+  return {
+    enabled: hasAccountId && section.enabled !== false,
+    configured: hasAccountId,
+    accountStatus: hasAccountId ? "available" : "missing",
+  };
+}
+
+// ── Build the channel plugin ─────────────────────────────────────────
+
+const _plugin = createChatChannelPlugin({
+  base: createChannelPluginBase({
+    id: "aicq-chat",
+
+    setup: {
+      resolveAccount,
+      inspectAccount,
+    },
+
+    // Gateway method descriptors — these are the method names the plugin
+    // will register via registerFull(). Declaring them here lets OpenClaw
+    // surface them in discovery / status surfaces before full activation.
+    gatewayMethodDescriptors: [
+      "aicq.status",
+      "aicq.friends.list",
+      "aicq.friends.add",
+      "aicq.friends.remove",
+      "aicq.friends.requests",
+      "aicq.friends.acceptRequest",
+      "aicq.friends.rejectRequest",
+      "aicq.identity.info",
+      "aicq.agent.create",
+      "aicq.agent.delete",
+      "aicq.chat.send",
+      "aicq.chat.history",
+      "aicq.chat.delete",
+      "aicq.chat.streamChunk",
+      "aicq.chat.streamEnd",
+      "aicq.groups.list",
+      "aicq.groups.create",
+      "aicq.groups.join",
+      "aicq.groups.messages",
+      "aicq.groups.silent",
+      "aicq.sessions.list",
+    ],
+  }),
+
+  // ── DM Security ──────────────────────────────────────────────────
+  security: {
+    dm: {
+      channelKey: "aicq-chat",
+      resolvePolicy: (account) => account.dmPolicy,
+      resolveAllowFrom: (account) => account.allowFrom,
+      defaultPolicy: "allowlist",
+    },
+  },
+
+  // ── Pairing ──────────────────────────────────────────────────────
+  pairing: {
+    text: {
+      idLabel: "AICQ Friend Code",
+      message: "Share this pairing code with the other party:",
+      notify: async ({ target, code }) => {
+        // AICQ pairing codes are shared out-of-band by the operator.
+        // No automatic notification is sent to the peer.
+      },
+    },
+  },
+
+  // ── Threading ────────────────────────────────────────────────────
+  threading: {
+    topLevelReplyToMode: "reply",
+  },
+
+  // ── Outbound ─────────────────────────────────────────────────────
+  outbound: {
+    attachedResults: {
+      channel: "aicq-chat",
+
+      sendText: async (params) => {
+        if (!runtime.chat) {
+          throw new Error("AICQ runtime not initialized — cannot send text");
+        }
+        const fromId =
+          params.from ||
+          params.accountId ||
+          (runtime.identity && runtime.identity.listAgents()[0]?.agent_id);
+        const result = await runtime.chat.sendMessage(
+          fromId,
+          params.to,
+          params.text,
+          { isGroup: false }
+        );
+        return { messageId: result?.message_id || result?.id || "sent" };
+      },
+    },
+
+    base: {
+      sendMedia: async (params) => {
+        if (!runtime.chat) {
+          throw new Error("AICQ runtime not initialized — cannot send media");
+        }
+        const fromId =
+          params.from ||
+          params.accountId ||
+          (runtime.identity && runtime.identity.listAgents()[0]?.agent_id);
+        await runtime.chat.sendMessage(
+          fromId,
+          params.to,
+          params.mediaUrl || params.filePath,
+          { type: params.mediaType || "file", isGroup: false }
+        );
+      },
+    },
+  },
+});
+
+// ── Add config helpers (required by OpenClaw channel loader) ──────────
+// createChatChannelPlugin does not auto-attach config helpers,
+// but the OpenClaw loader requires plugin.config.listAccountIds
+// and plugin.config.resolveAccount for channel registration.
+_plugin.config = {
+  /**
+   * List all account IDs configured for this channel.
+   */
+  listAccountIds(cfg) {
+    const section = (cfg.channels || {})["aicq-chat"] || {};
+    if (section.accountId) {
+      return [section.accountId];
+    }
+    return [];
+  },
+
+  /**
+   * Resolve an account from config. Reuses the setup resolver.
+   */
+  resolveAccount,
+
+  /**
+   * Lightweight account inspection.
+   */
+  inspectAccount,
+
+  /**
+   * Check if the channel is configured.
+   */
+  isConfigured(cfg) {
+    const section = (cfg.channels || {})["aicq-chat"] || {};
+    return Boolean(section.accountId);
+  },
+
+  /**
+   * Return the reason the channel is not configured.
+   */
+  unconfiguredReason(cfg) {
+    const section = (cfg.channels || {})["aicq-chat"] || {};
+    if (!section.accountId) {
+      return "accountId is required — set channels.aicq-chat.accountId in openclaw.json";
+    }
+    return null;
+  },
+
+  /**
+   * Describe the account for status surfaces.
+   */
+  describeAccount(cfg, accountId) {
+    const section = (cfg.channels || {})["aicq-chat"] || {};
+    return {
+      accountId: accountId || section.accountId || null,
+      label: "AICQ Encrypted Chat",
+      enabled: section.enabled !== false,
+    };
+  },
+};
+
+export const aicqChatPlugin = _plugin;

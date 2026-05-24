@@ -1,21 +1,25 @@
-# AICQ Chat Plugin v3.0
+# AICQ Chat Plugin v3.2
 
-AICQ 端到端加密聊天频道插件 — 基于 OpenClaw Channel 架构。
+AICQ 端到端加密聊天频道插件 — 基于 OpenClaw Channel Plugin SDK。
 
-## 架构 (v3.0 Channel)
+## 架构 (v3.2 Channel SDK)
 
-v3.0 采用 Channel 插件架构，直接在 OpenClaw 进程内运行：
+v3.2 采用官方 OpenClaw Channel Plugin SDK，使用 `defineChannelPluginEntry` + `createChatChannelPlugin`：
 
-- **无需独立端口** — 不再需要 port 6109 的 sidecar 进程
-- **复用 Agent ID** — 直接使用 OpenClaw 智能体身份
+- **ESM 模块** — 入口文件使用 ES Module 格式
+- **官方 SDK** — 使用 `openclaw/plugin-sdk/channel-core` 的 `defineChannelPluginEntry` 和 `createChatChannelPlugin`
 - **进程内通信** — 通过 Turn Kernel 推送消息，无 HTTP 轮询
 - **Gateway HTTP 路由** — SPA 和 API 通过 Gateway 路由提供
+- **setupEntry** — 轻量级 setup 入口，不加载运行时代码
 
 ## 一键安装
 
 ```bash
 # 安装插件
 openclaw plugins install npm:aicq-chat-plugin
+
+# 配置频道
+openclaw channels add --channel aicq-chat --name "AICQ Chat"
 
 # 重启 gateway
 openclaw gateway restart
@@ -63,12 +67,13 @@ openclaw gateway restart
 | `AICQ_SERVER_URL` | https://aicq.online | AICQ 服务器地址 |
 | `AICQ_DATA_DIR` | ~/.aicq-plugin | 数据存储目录 |
 
-## 迁移指南 (v2 → v3)
+## 迁移指南 (v3.0 → v3.2)
 
 1. 卸载旧版：`openclaw plugins uninstall aicq-chat`
 2. 安装新版：`openclaw plugins install npm:aicq-chat-plugin`
-3. 重启 gateway：`openclaw gateway restart`
-4. 旧版数据（密钥、好友、消息）会自动迁移
+3. 配置频道：`openclaw channels add --channel aicq-chat`
+4. 重启 gateway：`openclaw gateway restart`
+5. 旧版数据（密钥、好友、消息）会自动迁移
 
 ## 许可证
 

@@ -1,19 +1,17 @@
 {
   "name": "aicq-chat-plugin",
-  "version": "3.3.1",
+  "version": "3.3.0",
   "description": "AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — In-process Channel SDK architecture with friend management, group chat, file transfer, and AI agent communication",
   "type": "module",
-  "main": "index.mjs",
+  "main": "index.js",
   "bin": {
-    "aicq-plugin": "cli.js"
+    "aicq-plugin": "cli.cjs"
   },
   "files": [
-    "index.mjs",
     "index.js",
-    "setup-entry.mjs",
     "setup-entry.js",
-    "cli.js",
-    "postinstall.js",
+    "cli.cjs",
+    "postinstall.cjs",
     "src/",
     "lib/",
     "public/",
@@ -22,9 +20,8 @@
     "README.md"
   ],
   "scripts": {
-    "start": "node index.mjs",
-    "start:cjs": "node index.js",
-    "postinstall": "node postinstall.js",
+    "start": "node index.js",
+    "postinstall": "node postinstall.cjs",
     "install-deps": "npm install"
   },
   "keywords": [
@@ -61,14 +58,22 @@
     "tweetnacl-util": "^0.15.1",
     "ws": "^8.16.0"
   },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=18.0.0"
   },
   "openclaw": {
     "extensions": [
-      "./index.mjs"
+      "./index.js"
     ],
-    "setupEntry": "./setup-entry.mjs",
+    "setupEntry": "./setup-entry.js",
     "channel": {
       "id": "aicq-chat",
       "label": "AICQ Encrypted Chat",

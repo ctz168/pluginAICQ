@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * AICQ Chat Plugin — Post-install script (v3.0 Channel)
+ * AICQ Chat Plugin — Post-install script (v3.2 Channel SDK)
  *
  * Displays setup information after npm install.
- * v3.0 uses Channel architecture - no independent port needed.
+ * v3.2 uses official Channel Plugin SDK (defineChannelPluginEntry).
  */
 
 console.log('');
 console.log('  ╔══════════════════════════════════════════════╗');
-console.log('  ║     AICQ Chat Plugin v3.0 Installed!        ║');
+console.log('  ║     AICQ Chat Plugin v3.2 Installed!        ║');
 console.log('  ╠══════════════════════════════════════════════╣');
 console.log('  ║                                              ║');
-console.log('  ║   Architecture: Channel (in-process)         ║');
+console.log('  ║   Architecture: Channel SDK (in-process)     ║');
+console.log('  ║   Uses defineChannelPluginEntry              ║');
 console.log('  ║   No independent port needed!                ║');
 console.log('  ║                                              ║');
 console.log('  ║   Install via openclaw CLI:                  ║');

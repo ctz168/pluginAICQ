@@ -135,7 +135,7 @@ function copyDirRecursive(src, dest) {
 // ── Install plugin files to a target directory ─────────────────────
 function installToDir(sourceDir, targetDir, version) {
   const filesToCopy = [
-    'index.js', 'setup-entry.js', 'cli.js', 'postinstall.js',
+    'index.js', 'setup-entry.js', 'cli.cjs', 'postinstall.cjs',
     'openclaw.plugin.json', 'package.json', 'README.md',
   ];
   const dirsToCopy = ['lib', 'src', 'public'];
@@ -287,7 +287,7 @@ function uninstallFromOpenClaw() {
 // ── Help ────────────────────────────────────────────────────────────
 if (command === '--help' || command === '-h') {
   console.log(`
-AICQ Chat Plugin v3.0 — End-to-End Encrypted Chat for OpenClaw (Channel)
+AICQ Chat Plugin v3.2 — End-to-End Encrypted Chat for OpenClaw (Channel SDK)
 
 Usage:
   openclaw plugins install npm:aicq-chat-plugin   Install plugin via openclaw CLI
@@ -296,8 +296,8 @@ Usage:
   aicq-plugin [command] [options]                 Advanced usage
 
 Commands:
-  start       Install to OpenClaw (if needed) and start in standalone mode (default)
-  install     Install plugin to OpenClaw only (don't start server)
+  start       Install to OpenClaw (if needed) (default)
+  install     Install plugin to OpenClaw only
   uninstall   Remove plugin from OpenClaw (skills/ and plugins/)
   status      Check if the plugin is running
 
@@ -312,8 +312,9 @@ Environment Variables:
   OPENCLAW_WORKSPACE      OpenClaw workspace directory (for skills/)
 
 Architecture:
-  v3.0 uses Channel architecture — runs in-process with OpenClaw.
-  No independent port needed. UI served via Gateway HTTP routes.
+  v3.2 uses official Channel Plugin SDK (defineChannelPluginEntry).
+  Runs in-process with OpenClaw — no standalone server needed.
+  UI served via Gateway HTTP routes.
   - UI: /plugins/aicq-chat/ui/
   - API: /plugins/aicq-chat/api/*
 `);
@@ -322,8 +323,8 @@ Architecture:
 
 // ── Status ──────────────────────────────────────────────────────────
 if (command === 'status') {
-  console.log('AICQ Plugin v3.0 (Channel architecture)');
-  console.log('In Channel mode, the plugin runs inside OpenClaw process.');
+  console.log('AICQ Plugin v3.2 (Channel SDK architecture)');
+  console.log('Uses defineChannelPluginEntry — runs in-process with OpenClaw.');
   console.log('Check OpenClaw gateway status for plugin health.');
   process.exit(0);
 }
@@ -340,32 +341,16 @@ if (command === 'uninstall' || command === 'remove') {
   process.exit(0);
 }
 
-// ── Start (default) — auto-install then run in standalone mode ──────
+// ── Start (default) — auto-install then inform user ───────────────
 installToOpenClaw();
 
-console.log(`[AICQ] Starting plugin in standalone mode`);
+console.log('');
+console.log('[AICQ] Channel Plugin uses OpenClaw Channel SDK (defineChannelPluginEntry).');
+console.log('[AICQ] It runs in-process with OpenClaw — no standalone server needed.');
+console.log('[AICQ] To activate:');
+console.log('  openclaw plugins install npm:aicq-chat-plugin');
+console.log('  openclaw gateway restart');
+console.log('');
 console.log(`[AICQ] Server: ${serverUrl}`);
-
-const env = { ...process.env, AICQ_SERVER_URL: serverUrl };
-const child = spawn('node', [path.join(__dirname, 'index.js')], {
-  env,
-  stdio: 'inherit',
-  detached: false,
-});
-
-child.on('error', (err) => {
-  console.error('[AICQ] Failed to start:', err.message);
-  process.exit(1);
-});
-
-child.on('exit', (code) => {
-  process.exit(code || 0);
-});
-
-process.on('SIGINT', () => {
-  child.kill('SIGINT');
-});
-
-process.on('SIGTERM', () => {
-  child.kill('SIGTERM');
-});
+console.log('[AICQ] UI: /plugins/aicq-chat/ui/');
+console.log('[AICQ] API: /plugins/aicq-chat/api/*');

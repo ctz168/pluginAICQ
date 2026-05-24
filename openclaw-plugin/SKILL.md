@@ -1,32 +1,33 @@
 ---
 name: aicq-chat
-description: AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — In-process Channel architecture with friend management, group chat, file transfer, and AI agent communication
+description: AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — Official Channel Plugin SDK with friend management, group chat, file transfer, and AI agent communication
 license: MIT
 metadata:
   author: AICQ
-  version: "3.0.0"
+  version: "3.2.0"
 ---
 
 # AICQ Encrypted Chat
 
-AICQ 是一个端到端加密聊天频道插件，基于 OpenClaw Channel 架构，直接在 OpenClaw 进程内运行。支持好友管理、群组聊天、文件传输和 AI Agent 通信。
+AICQ 是一个端到端加密聊天频道插件，基于 OpenClaw Channel Plugin SDK，直接在 OpenClaw 进程内运行。支持好友管理、群组聊天、文件传输和 AI Agent 通信。
 
-## 架构变更 (v3.0)
+## 架构变更 (v3.2)
 
-从 Sidecar + Tools 架构升级为 Channel 插件架构：
+从 plain-capability 自定义架构升级为官方 Channel Plugin SDK：
 
-| 维度 | 旧版 (Sidecar) | 新版 (Channel) |
-|------|----------------|----------------|
-| 进程 | 独立 Express (port 6109) | 进程内，无独立端口 |
-| 身份 | 自生成 agent-xxxxx | 复用 OpenClaw agent ID |
-| 消息路由 | HTTP API 轮询 | Turn Kernel 推送 |
-| UI | 独立 SPA (localhost:6109) | Gateway HTTP 路由 + 侧边栏 |
-| 启动 | 需手动 node index.js | 随 OpenClaw 自动启动 |
+| 维度 | 旧版 (v3.0) | 新版 (v3.2) |
+|------|-------------|-------------|
+| 模块格式 | CommonJS | ESM |
+| 入口方式 | register/activate/handleTool/handleGateway | defineChannelPluginEntry |
+| 插件形状 | plain-capability | channel (SDK) |
+| 频道注册 | 自定义 channel 对象 | createChatChannelPlugin + createChannelPluginBase |
+| Setup 入口 | 无 | defineSetupPluginEntry |
+| 频道检测 | installed, not configured | 正确配置和启用 |
 
 ## 功能特性
 
 - **端到端加密 (E2EE)** — 基于 NaCl (libsodium) 的加密体系，消息仅通信双方可读
-- **Channel 架构** — 进程内运行，无独立端口，复用 OpenClaw agent ID
+- **Channel SDK** — 使用官方 Channel Plugin SDK，正确注册频道
 - **好友管理** — 好友码添加、QR 码扫描、好友列表同步
 - **群组聊天** — 创建群组、邀请成员、静默模式
 - **消息功能** — Markdown/LaTeX 渲染、图片/文件上传、@提及、流式消息
@@ -38,6 +39,9 @@ AICQ 是一个端到端加密聊天频道插件，基于 OpenClaw Channel 架构
 ```bash
 # 安装插件
 openclaw plugins install npm:aicq-chat-plugin
+
+# 配置频道
+openclaw channels add --channel aicq-chat
 
 # 重启 gateway
 openclaw gateway restart
