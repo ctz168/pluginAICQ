@@ -186,6 +186,8 @@ const _plugin = createChatChannelPlugin({
       "aicq.chat.sendFile",
       "aicq.chat.sendImage",
       "aicq.chat.sendFileFromBase64",
+      "aicq.userfiles.list",
+      "aicq.userfiles.getPath",
       "aicq.groups.list",
       "aicq.groups.create",
       "aicq.groups.join",
@@ -362,12 +364,34 @@ _plugin.gateway = {
           const data = msg.data || msg;
           const fromId = data.from || data.fromId || data.sender_id || msg.from || msg.fromId;
           const isGroup = !!(data.isGroup || data.groupId || msg.isGroup || msg.groupId);
-          const text = data.content || data.text || data.payload || msg.content || msg.text || msg.payload || "";
 
-          console.log(`[AICQ Channel] Inbound message from=${fromId} isGroup=${isGroup} text=${(text || "").substring(0, 80)}`);
+          // Detect file/image messages
+          const msgType = data.msgType || data.msg_type || (data.data && data.data.file_info ? (data.data.file_info.isImage ? 'image' : 'file') : 'text');
+          const isFileMessage = msgType === 'file' || msgType === 'image';
 
-          if (!fromId || !text) {
+          // For file/image messages, chat.js already handles saving to userfiles/
+          // and creating a notification message via _notifyAgentAboutFile().
+          // That notification triggers _onNewMessage which calls this inboundHandler
+          // again with the text message. So we just need to handle text here.
+          let text = data.content || data.text || data.payload || msg.content || msg.text || msg.payload || "";
+
+          console.log(`[AICQ Channel] Inbound message from=${fromId} isGroup=${isGroup} type=${msgType} text=${(text || "").substring(0, 80)}`);
+
+          if (!fromId) {
             return; // Skip system messages (online_ack, presence, etc.)
+          }
+
+          // For file/image messages from the WS, chat.js _handleIncoming/_handleGroupIncoming
+          // will handle the userfiles saving and create a notification text message.
+          // The notification will trigger _onNewMessage which calls this handler again
+          // as a text message. So we skip dispatching file messages directly to the agent.
+          if (isFileMessage && !(data.file_url && data.type === 'text')) {
+            console.log(`[AICQ Channel] File/image message received, chat.js will handle userfiles saving and notify agent`);
+            return;
+          }
+
+          if (!text) {
+            return; // Skip empty messages
           }
 
           // Skip our own messages

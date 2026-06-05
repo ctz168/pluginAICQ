@@ -132,7 +132,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.8.0",
+        version: "3.9.0",
         architecture: "channel",
       };
     case "aicq.friends.list":
@@ -278,6 +278,14 @@ async function handleGatewayMethod(method, kwargs = {}) {
       );
       return { success: true, file: b64Result };
     }
+    case "aicq.userfiles.list": {
+      if (!_chat) return { error: "Chat not initialized" };
+      return { files: _chat.listUserfiles(), directory: _chat.getUserfilesDir() };
+    }
+    case "aicq.userfiles.getPath": {
+      if (!_chat) return { error: "Chat not initialized" };
+      return { directory: _chat.getUserfilesDir() };
+    }
     case "aicq.sessions.list":
       return { sessions: [] };
     default:
@@ -332,6 +340,8 @@ async function registerFull(api) {
     "aicq.chat.sendFile",
     "aicq.chat.sendImage",
     "aicq.chat.sendFileFromBase64",
+    "aicq.userfiles.list",
+    "aicq.userfiles.getPath",
     "aicq.groups.list",
     "aicq.groups.create",
     "aicq.groups.join",

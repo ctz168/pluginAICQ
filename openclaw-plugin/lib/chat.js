@@ -1,10 +1,11 @@
 /**
  * AICQ Chat Manager — Send/receive messages, group chat, file/image handling
  *
- * v3.8.0: Added file and image sending via WebSocket.
- *         Files are sent as base64 chunks through the 'message' WS type
- *         with type='file' or type='image', compatible with the AICQ
- *         server relay protocol and chat.html client.
+ * v3.9.0: File/image receiving redesigned.
+ *         Incoming files are saved to userfiles/ directory first,
+ *         then a simulated user message is dispatched to the AI agent
+ *         telling it about the uploaded file with full path info.
+ *         The agent can then read and process the file.
  */
 const { encryptMessage, decryptMessage } = require('./crypto');
 const fs = require('fs');
@@ -22,9 +23,15 @@ class ChatManager {
     this.uploadsDir = uploadsDir;
     this._onNewMessage = null;
 
-    // Ensure uploads directory exists
+    // userfiles/ directory — where received files are saved for agent processing
+    this.userfilesDir = path.join(path.dirname(uploadsDir), 'userfiles');
+
+    // Ensure directories exist
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    if (!fs.existsSync(this.userfilesDir)) {
+      fs.mkdirSync(this.userfilesDir, { recursive: true });
     }
 
     // Listen for incoming messages via WS
@@ -350,22 +357,10 @@ class ChatManager {
 
     // Check if this is a file/image message in the new format
     if (typeof data === 'object' && data.data && typeof data.data === 'object' && data.data.file_info) {
-      // This is a structured message with file info
+      // This is a structured message with file info — save to userfiles and notify agent
       const fileInfo = data.data.file_info;
       const msgType = fileInfo.isImage ? 'image' : 'file';
-      const msg = this.db.saveMessage({
-        agent_id: agentId,
-        target_id: fromId,
-        from_id: fromId,
-        to_id: agentId,
-        type: msgType,
-        content: data.data.content || (fileInfo.isImage ? '[图片]' : `[文件] ${fileInfo.fileName}`),
-        file_url: data.data.file_url || '',
-        file_name: fileInfo.fileName || '',
-        is_group: 0,
-        status: 'delivered',
-      });
-      if (this._onNewMessage) this._onNewMessage(msg);
+      this._saveToUserfilesAndNotify(agentId, fromId, fileInfo, data.data, { isGroup: false });
       return;
     }
 
@@ -405,26 +400,14 @@ class ChatManager {
     const msgType = data.msgType || data.msg_type || 'text';
 
     if (msgType === 'file' || msgType === 'image') {
-      // File/image in group message
+      // File/image in group message — save to userfiles and notify agent
       let fileInfo = {};
       try {
         fileInfo = typeof content === 'string' ? JSON.parse(content) : content;
       } catch (e) {}
 
       if (fileInfo.file_info) {
-        const msg = this.db.saveMessage({
-          agent_id: agentId,
-          target_id: groupId,
-          from_id: fromId,
-          to_id: groupId,
-          type: msgType,
-          content: fileInfo.content || (fileInfo.file_info.isImage ? '[图片]' : `[文件] ${fileInfo.file_info.fileName}`),
-          file_url: fileInfo.file_url || '',
-          file_name: fileInfo.file_info.fileName || '',
-          is_group: 1,
-          status: 'delivered',
-        });
-        if (this._onNewMessage) this._onNewMessage(msg);
+        this._saveToUserfilesAndNotify(agentId, groupId, fileInfo.file_info, fileInfo, { isGroup: true, fromId });
         return;
       }
     }
@@ -532,8 +515,18 @@ class ChatManager {
       const isImage = meta.isImage || this._isImageExt(ext);
       const msgType = isImage ? 'image' : 'file';
 
-      // Save message to chat history
+      // Save the assembled file to userfiles/ and notify the agent
       if (agentId) {
+        // Move from uploads/ to userfiles/ for agent access
+        const userfilesPath = path.join(this.userfilesDir, localFileName);
+        try {
+          // Copy to userfiles (keep original in uploads for HTTP serving)
+          fs.copyFileSync(localPath, userfilesPath);
+        } catch (e) {
+          console.warn(`[Chat] Could not copy to userfiles: ${e.message}`);
+        }
+
+        // Save message to chat history
         const msg = this.db.saveMessage({
           agent_id: agentId,
           target_id: fromId || '',
@@ -546,14 +539,45 @@ class ChatManager {
           is_group: 0,
           status: 'delivered',
         });
-        if (this._onNewMessage) this._onNewMessage(msg);
+
+        // Notify agent with file path info
+        if (this._onNewMessage) {
+          this._notifyAgentAboutFile(agentId, fromId || '', meta.fileName, userfilesPath, msgType, isImage, { isGroup: false });
+          this._onNewMessage(msg);
+        }
       }
 
-      console.log(`[Chat] File assembled: ${meta.fileName} (${fileBuffer.length} bytes)`);
+      console.log(`[Chat] File assembled and saved to userfiles: ${meta.fileName} (${fileBuffer.length} bytes)`);
     } catch (e) {
       console.error(`[Chat] File assembly failed for ${fileId}:`, e.message);
     } finally {
       this._incomingFiles.delete(fileId);
+
+      // Check if there's a pending notification for this file
+      if (this._pendingFileNotifications && this._pendingFileNotifications.has(fileId)) {
+        const pending = this._pendingFileNotifications.get(fileId);
+        this._pendingFileNotifications.delete(fileId);
+
+        // The file is now assembled in uploads/ — copy to userfiles/
+        const ext = this._extFromMime(meta?.mimeType) || path.extname(meta?.fileName || '') || '.bin';
+        const localFileName = `${fileId}${ext}`;
+        const localPath = path.join(this.uploadsDir, localFileName);
+        const userfilesPath = path.join(this.userfilesDir, pending.safeName);
+
+        if (fs.existsSync(localPath)) {
+          try {
+            fs.copyFileSync(localPath, userfilesPath);
+            this._notifyAgentAboutFile(
+              pending.agentId, pending.fromId, pending.originalName,
+              userfilesPath, pending.msgType, pending.isImage,
+              { isGroup: pending.isGroup }
+            );
+            console.log(`[Chat] Pending notification sent for assembled file: ${pending.originalName}`);
+          } catch (e2) {
+            console.warn(`[Chat] Failed to copy assembled file to userfiles: ${e2.message}`);
+          }
+        }
+      }
     }
   }
 
@@ -708,6 +732,204 @@ class ChatManager {
 
     if (this._onNewMessage) this._onNewMessage(msg);
     return msg;
+  }
+
+  // ─── Userfiles: save received file and notify agent ─────────────
+
+  /**
+   * Save a received file to userfiles/ directory and notify the AI agent
+   * that a file was uploaded. This creates a simulated user message
+   * telling the agent about the file with its full path.
+   *
+   * @param {string} agentId - The local agent ID
+   * @param {string} chatId - The chat/session ID (friend or group)
+   * @param {object} fileInfo - File metadata { fileName, fileSize, mimeType, isImage }
+   * @param {object} rawData - The raw message data (may contain base64 content)
+   * @param {object} opts - { isGroup, fromId }
+   */
+  _saveToUserfilesAndNotify(agentId, chatId, fileInfo, rawData, opts = {}) {
+    const { isGroup = false, fromId = chatId } = opts;
+    const originalName = fileInfo.fileName || 'unknown';
+    const isImage = fileInfo.isImage || this._isImageExt(path.extname(originalName));
+    const msgType = isImage ? 'image' : 'file';
+
+    // Generate a safe filename: timestamp_originalname to avoid collisions
+    const safeName = `${Date.now()}_${originalName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const userfilesPath = path.join(this.userfilesDir, safeName);
+
+    // Try to extract file data from the message
+    let saved = false;
+
+    // Case 1: file_info message may include base64 data in rawData.data
+    if (rawData.data && typeof rawData.data === 'string') {
+      try {
+        const buffer = Buffer.from(rawData.data, 'base64');
+        fs.writeFileSync(userfilesPath, buffer);
+        saved = true;
+        console.log(`[Chat] File saved to userfiles from base64 data: ${safeName} (${buffer.length} bytes)`);
+      } catch (e) {
+        console.warn(`[Chat] Failed to save file from base64 data: ${e.message}`);
+      }
+    }
+
+    // Case 2: file_url might point to a local file in uploads/
+    if (!saved && rawData.file_url) {
+      const localFileName = path.basename(rawData.file_url);
+      const localPath = path.join(this.uploadsDir, localFileName);
+      if (fs.existsSync(localPath)) {
+        try {
+          fs.copyFileSync(localPath, userfilesPath);
+          saved = true;
+          console.log(`[Chat] File copied from uploads to userfiles: ${safeName}`);
+        } catch (e) {
+          console.warn(`[Chat] Failed to copy file from uploads: ${e.message}`);
+        }
+      }
+    }
+
+    // Case 3: If we have file_info with chunks, the file may still be
+    // downloading via file_chunk messages. In that case, we set up a
+    // pending notification that will be sent when _assembleFile completes.
+    if (!saved && fileInfo.fileId) {
+      // Store the notification info for when the file is fully assembled
+      if (!this._pendingFileNotifications) {
+        this._pendingFileNotifications = new Map();
+      }
+      this._pendingFileNotifications.set(fileInfo.fileId, {
+        agentId, chatId, fromId, originalName, msgType, isImage, isGroup, safeName,
+      });
+      console.log(`[Chat] File ${originalName} pending assembly (fileId=${fileInfo.fileId}), notification queued`);
+    }
+
+    // Save message to chat history
+    const msg = this.db.saveMessage({
+      agent_id: agentId,
+      target_id: chatId,
+      from_id: fromId,
+      to_id: agentId,
+      type: msgType,
+      content: isImage ? `[图片] ${originalName}` : `[文件] ${originalName}`,
+      file_url: rawData.file_url || `/userfiles/${safeName}`,
+      file_name: originalName,
+      is_group: isGroup ? 1 : 0,
+      status: saved ? 'delivered' : 'pending',
+    });
+
+    // Notify the agent about the file
+    if (saved) {
+      this._notifyAgentAboutFile(agentId, fromId, originalName, userfilesPath, msgType, isImage, opts);
+    }
+
+    if (this._onNewMessage) this._onNewMessage(msg);
+  }
+
+  /**
+   * Notify the AI agent about a received file by sending a simulated
+   * user message that describes the file and its location.
+   *
+   * @param {string} agentId - The local agent ID
+   * @param {string} fromId - The sender ID
+   * @param {string} fileName - Original file name
+   * @param {string} filePath - Absolute path to the saved file in userfiles/
+   * @param {string} msgType - 'image' or 'file'
+   * @param {boolean} isImage - Whether this is an image
+   * @param {object} opts - { isGroup, caption }
+   */
+  _notifyAgentAboutFile(agentId, fromId, fileName, filePath, msgType, isImage, opts = {}) {
+    const { isGroup = false, caption = '' } = opts;
+    const fileSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+    const mimeType = this._getMimeType(fileName);
+
+    // Build a descriptive message for the AI agent
+    let agentMessage;
+    if (isImage) {
+      agentMessage = [
+        `[用户上传了图片]`,
+        `文件名: ${fileName}`,
+        `文件路径: ${filePath}`,
+        `文件大小: ${this._formatFileSize(fileSize)}`,
+        `文件类型: ${mimeType}`,
+        caption ? `说明: ${caption}` : '',
+        `请查看并处理这张图片。`,
+      ].filter(Boolean).join('\n');
+    } else {
+      agentMessage = [
+        `[用户上传了文件]`,
+        `文件名: ${fileName}`,
+        `文件路径: ${filePath}`,
+        `文件大小: ${this._formatFileSize(fileSize)}`,
+        `文件类型: ${mimeType}`,
+        caption ? `说明: ${caption}` : '',
+        `请读取并处理这个文件。`,
+      ].filter(Boolean).join('\n');
+    }
+
+    // Save this as a text message in chat history so the agent sees it
+    const msg = this.db.saveMessage({
+      agent_id: agentId,
+      target_id: fromId,
+      from_id: fromId,
+      to_id: agentId,
+      type: 'text',
+      content: agentMessage,
+      file_url: filePath,
+      file_name: fileName,
+      is_group: isGroup ? 1 : 0,
+      status: 'delivered',
+    });
+
+    // Trigger the onNewMessage callback so the channel.js inbound handler
+    // picks it up and dispatches it to the AI agent
+    if (this._onNewMessage) {
+      this._onNewMessage(msg);
+    }
+
+    console.log(`[Chat] Agent notification sent: ${msgType} ${fileName} at ${filePath}`);
+  }
+
+  /**
+   * Format file size in human-readable format.
+   */
+  _formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+  }
+
+  /**
+   * List all files in the userfiles directory.
+   * @returns {Array} Array of file info objects
+   */
+  listUserfiles() {
+    if (!fs.existsSync(this.userfilesDir)) return [];
+    return fs.readdirSync(this.userfilesDir)
+      .filter(name => !name.startsWith('.'))
+      .map(name => {
+        const fullPath = path.join(this.userfilesDir, name);
+        try {
+          const stat = fs.statSync(fullPath);
+          return {
+            name,
+            path: fullPath,
+            size: stat.size,
+            mimeType: this._getMimeType(name),
+            isImage: this._isImageExt(path.extname(name)),
+            modifiedAt: stat.mtime.toISOString(),
+          };
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  /**
+   * Get the userfiles directory path.
+   * @returns {string} Absolute path to userfiles directory
+   */
+  getUserfilesDir() {
+    return this.userfilesDir;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
