@@ -132,7 +132,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.6.0",
+        version: "3.7.0",
         architecture: "channel",
       };
     case "aicq.friends.list":
