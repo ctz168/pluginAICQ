@@ -181,11 +181,10 @@ const _plugin = createChatChannelPlugin({
       "aicq.chat.send",
       "aicq.chat.history",
       "aicq.chat.delete",
+      "aicq.chat.userUpload",
+      "aicq.chat.userfiles",
       "aicq.chat.streamChunk",
       "aicq.chat.streamEnd",
-      "aicq.chat.sendFile",
-      "aicq.chat.sendImage",
-      "aicq.chat.sendFileFromBase64",
       "aicq.groups.list",
       "aicq.groups.create",
       "aicq.groups.join",
@@ -350,112 +349,71 @@ _plugin.gateway = {
       }
     }
 
-    // Wire up inbound message handling
-    // Register handlers for AICQ message types. When an inbound message arrives,
-    // we try the OpenClaw channelRuntime first; if that fails we fall back to
-    // calling z-ai CLI directly and sending the reply via chat.sendMessage.
-    if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
-      const inboundHandler = async (msg) => {
-        try {
-          // AICQ server wraps message content in msg.data for "message" type,
-          // but "relay" type may have fields at the top level.
-          const data = msg.data || msg;
-          const fromId = data.from || data.fromId || data.sender_id || msg.from || msg.fromId;
-          const isGroup = !!(data.isGroup || data.groupId || msg.isGroup || msg.groupId);
-          const text = data.content || data.text || data.payload || msg.content || msg.text || msg.payload || "";
+    // Wire up inbound message handling via channelRuntime if available
+    if (ctx.channelRuntime) {
+      const { reply, routing } = ctx.channelRuntime;
+      if (reply && routing) {
+        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
 
-          console.log(`[AICQ Channel] Inbound message from=${fromId} isGroup=${isGroup} text=${(text || "").substring(0, 80)}`);
+        // Set up the onNewMessage callback for the ChatManager
+        // This handles both regular text messages and synthetic file notifications
+        if (runtime.chat) {
+          runtime.chat.setOnNewMessage(async (msg) => {
+            try {
+              // Skip stream and presence events — not user messages
+              if (msg.type === 'stream_chunk' || msg.type === 'stream_end') return;
 
-          if (!fromId || !text) {
-            return; // Skip system messages (online_ack, presence, etc.)
-          }
+              const resolvedAgentId = agentId;
+              const fromId = msg.from_id || msg.from || msg.sender_id;
+              const isGroup = !!(msg.is_group || msg.isGroup);
+              const isFileMsg = !!(msg.local_path || msg._synthetic);
+              let textContent = msg.content || msg.text || "";
 
-          // Skip our own messages
-          if (fromId === runtime.serverClient?.serverAccountId || fromId === agentId) {
-            return;
-          }
-
-          // Try channelRuntime (OpenClaw's built-in agent dispatch) first
-          if (ctx.channelRuntime) {
-            const { reply, routing } = ctx.channelRuntime;
-            if (reply && routing) {
-              try {
-                const routeResult = await routing.resolveAgentRoute({
-                  channelId: "aicq-chat",
-                  accountId,
-                  fromId,
-                  chatType: isGroup ? "group" : "dm",
-                });
-
-                if (routeResult?.agentId) {
-                  await reply.dispatchReplyWithBufferedBlockDispatcher({
-                    ctx: {
-                      channelId: "aicq-chat",
-                      accountId,
-                      fromId,
-                      text,
-                      chatType: isGroup ? "group" : "dm",
-                    },
-                    cfg,
-                    dispatcherOptions: {
-                      deliver: async (payload) => {
-                        if (runtime.chat && payload.text) {
-                          await runtime.chat.sendMessage(agentId, fromId, payload.text, { isGroup });
-                        }
-                      },
-                    },
-                  });
-                  return; // Successfully dispatched via channelRuntime
-                }
-              } catch (e) {
-                console.error("[AICQ Channel] channelRuntime dispatch failed, using fallback:", e.message);
+              // For file messages, include the local path info in the dispatch text
+              if (isFileMsg && msg.local_path) {
+                // The content already includes file info (from the synthetic message
+                // generated in chat.js), so we just pass it through to the AI
               }
-            }
-          }
 
-          // Fallback: call LLM via z-ai CLI and send reply directly
-          console.log("[AICQ Channel] Using fallback: direct z-ai CLI call");
-          try {
-            const { execFile } = await import('child_process');
-            const llmResult = await new Promise((resolve, reject) => {
-              execFile('z-ai', ['chat', '--prompt', text], { timeout: 60000 }, (err, stdout) => {
-                if (err) reject(err);
-                else resolve(stdout);
+              const routeResult = await routing.resolveAgentRoute({
+                channelId: "aicq-chat",
+                accountId,
+                fromId,
+                chatType: isGroup ? "group" : "dm",
               });
-            });
-            let replyText = '';
-            const jsonStart = llmResult.indexOf('{');
-            if (jsonStart >= 0) {
-              try {
-                const parsed = JSON.parse(llmResult.substring(jsonStart));
-                replyText = parsed.choices?.[0]?.message?.content || llmResult.trim();
-              } catch { replyText = llmResult.trim(); }
-            } else { replyText = llmResult.trim(); }
 
-            if (replyText && runtime.chat) {
-              await runtime.chat.sendMessage(agentId, fromId, replyText, { isGroup });
-              console.log(`[AICQ Channel] Fallback reply sent to ${fromId}: ${replyText.substring(0, 50)}`);
+              if (routeResult?.agentId) {
+                await reply.dispatchReplyWithBufferedBlockDispatcher({
+                  ctx: {
+                    channelId: "aicq-chat",
+                    accountId,
+                    fromId,
+                    text: textContent,
+                    chatType: isGroup ? "group" : "dm",
+                  },
+                  cfg,
+                  dispatcherOptions: {
+                    deliver: async (payload) => {
+                      if (runtime.chat && payload.text) {
+                        await runtime.chat.sendMessage(
+                          resolvedAgentId,
+                          fromId,
+                          payload.text,
+                          { isGroup }
+                        );
+                      }
+                    },
+                  },
+                });
+              }
+            } catch (e) {
+              console.error("[AICQ Channel] Inbound message handling error:", e.message);
             }
-          } catch (fallbackErr) {
-            console.error("[AICQ Channel] Fallback LLM also failed:", fallbackErr.message);
-          }
-        } catch (e) {
-          console.error("[AICQ Channel] Inbound message handling error:", e.message);
+          });
         }
-      };
-
-      // Register handler for relevant AICQ message types.
-      // ServerClient.onMessage(type, handler) requires a type string.
-      runtime.serverClient.onMessage("relay", inboundHandler);
-      runtime.serverClient.onMessage("message", inboundHandler);
-      runtime.serverClient.onMessage("group_message", inboundHandler);
-      console.log("[AICQ Channel] Inbound message handlers registered (relay, message, group_message)");
-
-      if (ctx.channelRuntime) {
-        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled (with z-ai CLI fallback)");
-      } else {
-        console.log("[AICQ Channel] channelRuntime not available — using z-ai CLI fallback");
       }
+    } else {
+      console.log("[AICQ Channel] channelRuntime not available — running in standalone mode");
     }
 
     // Update health status

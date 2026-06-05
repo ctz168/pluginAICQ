@@ -2,7 +2,7 @@
   "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.8.1",
+  "version": "3.7.0",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin using OpenClaw Channel SDK",
   "entry": "index.js",
   "activation": {
@@ -144,6 +144,8 @@
       "aicq.chat.history",
       "aicq.chat.send",
       "aicq.chat.delete",
+      "aicq.chat.userUpload",
+      "aicq.chat.userfiles",
       "aicq.chat.streamChunk",
       "aicq.chat.streamEnd",
       "aicq.groups.list",

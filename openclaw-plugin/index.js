@@ -54,7 +54,12 @@ async function ensureInitialized() {
   _identity = new IdentityManager(_db);
   _serverClient = new ServerClient(_identity, _db, SERVER_URL);
   _handshake = new HandshakeManager(_identity, _serverClient, _db);
-  _chat = new ChatManager(_identity, _serverClient, _db, path.join(DATA_DIR, "uploads"));
+  const uploadsDir = path.join(DATA_DIR, "uploads");
+  const userfilesDir = path.join(DATA_DIR, "userfiles");
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(userfilesDir, { recursive: true });
+
+  _chat = new ChatManager(_identity, _serverClient, _db, uploadsDir, userfilesDir);
 
   // Populate the shared runtime store so channel adapters can use it
   runtime.db = _db;
@@ -63,6 +68,8 @@ async function ensureInitialized() {
   runtime.handshake = _handshake;
   runtime.chat = _chat;
   runtime.dataDir = DATA_DIR;
+  runtime.userfilesDir = userfilesDir;
+  runtime.uploadsDir = uploadsDir;
   runtime.serverUrl = SERVER_URL;
   runtime.handleGateway = handleGatewayMethod;
   runtime.ensureInitialized = ensureInitialized;
@@ -132,7 +139,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.8.0",
+        version: "3.6.0",
         architecture: "channel",
       };
     case "aicq.friends.list":
@@ -169,6 +176,50 @@ async function handleGatewayMethod(method, kwargs = {}) {
     case "aicq.chat.delete":
       _db.deleteMessage(currentAgentId, kwargs.message_id);
       return { success: true };
+    case "aicq.chat.userUpload": {
+      // Save a file from a user to the userfiles directory and notify the AI agent
+      if (!kwargs.file_data && !kwargs.file_path)
+        return { error: "file_data (base64) or file_path is required" };
+      if (!kwargs.from_id && !kwargs.targetId)
+        return { error: "from_id or targetId is required" };
+      const uploadFromId = kwargs.from_id || kwargs.targetId;
+      const isGroupUpload = !!kwargs.isGroup;
+      let uploadResult;
+      if (kwargs.file_data) {
+        // Base64 file data
+        const fileBuffer = Buffer.from(kwargs.file_data, 'base64');
+        uploadResult = await _chat.handleUserFileUpload(currentAgentId, uploadFromId, {
+          buffer: fileBuffer,
+          originalname: kwargs.file_name || kwargs.fileName || 'file.bin',
+          size: fileBuffer.length,
+        }, isGroupUpload);
+      } else {
+        // File path — copy to userfiles
+        const srcPath = kwargs.file_path;
+        if (!fs.existsSync(srcPath)) return { error: "File not found: " + srcPath };
+        const fileBuffer = fs.readFileSync(srcPath);
+        uploadResult = await _chat.handleUserFileUpload(currentAgentId, uploadFromId, {
+          buffer: fileBuffer,
+          originalname: kwargs.file_name || path.basename(srcPath),
+          size: fileBuffer.length,
+        }, isGroupUpload);
+      }
+      return { success: true, localPath: uploadResult.localPath, originalName: uploadResult.originalName };
+    }
+    case "aicq.chat.userfiles": {
+      // List user files
+      const userfilesDir = runtime.userfilesDir;
+      if (!userfilesDir || !fs.existsSync(userfilesDir)) return { files: [] };
+      const userFiles = fs.readdirSync(userfilesDir)
+        .filter(f => fs.statSync(path.join(userfilesDir, f)).isFile())
+        .map(f => {
+          const fp = path.join(userfilesDir, f);
+          const stat = fs.statSync(fp);
+          return { name: f, path: fp, size: stat.size, modified: stat.mtime.toISOString() };
+        })
+        .sort((a, b) => b.modified.localeCompare(a.modified));
+      return { files: userFiles };
+    }
     case "aicq.chat.streamChunk": {
       if (!kwargs.friend_id && !kwargs.targetId)
         return { error: "friend_id or targetId is required" };
@@ -239,45 +290,6 @@ async function handleGatewayMethod(method, kwargs = {}) {
     case "aicq.groups.silent":
       _db.setGroupSilentMode(currentAgentId, kwargs.group_id, !!kwargs.silent);
       return { success: true, silent: !!kwargs.silent };
-    case "aicq.chat.sendFile": {
-      if (!kwargs.targetId) return { error: "targetId is required" };
-      if (!kwargs.filePath && !kwargs.file_path) return { error: "filePath is required" };
-      const sendFilePath = kwargs.filePath || kwargs.file_path;
-      const sendResult = await _chat.sendFile(currentAgentId, kwargs.targetId, sendFilePath, {
-        isGroup: !!kwargs.isGroup,
-        caption: kwargs.caption || "",
-      });
-      return { success: true, file: sendResult };
-    }
-    case "aicq.chat.sendImage": {
-      if (!kwargs.targetId) return { error: "targetId is required" };
-      if (!kwargs.filePath && !kwargs.file_path && !kwargs.base64) return { error: "filePath or base64 is required" };
-      if (kwargs.base64) {
-        const imgResult = await _chat.sendFileFromBase64(
-          currentAgentId, kwargs.targetId, kwargs.base64,
-          kwargs.fileName || kwargs.file_name || "image.png",
-          { isGroup: !!kwargs.isGroup, caption: kwargs.caption || "", mimeType: kwargs.mimeType || "" }
-        );
-        return { success: true, file: imgResult };
-      }
-      const imgFilePath = kwargs.filePath || kwargs.file_path;
-      const imgResult = await _chat.sendFile(currentAgentId, kwargs.targetId, imgFilePath, {
-        isGroup: !!kwargs.isGroup,
-        caption: kwargs.caption || "",
-      });
-      return { success: true, file: imgResult };
-    }
-    case "aicq.chat.sendFileFromBase64": {
-      if (!kwargs.targetId) return { error: "targetId is required" };
-      if (!kwargs.base64) return { error: "base64 is required" };
-      if (!kwargs.fileName && !kwargs.file_name) return { error: "fileName is required" };
-      const b64Result = await _chat.sendFileFromBase64(
-        currentAgentId, kwargs.targetId, kwargs.base64,
-        kwargs.fileName || kwargs.file_name,
-        { isGroup: !!kwargs.isGroup, caption: kwargs.caption || "", mimeType: kwargs.mimeType || "" }
-      );
-      return { success: true, file: b64Result };
-    }
     case "aicq.sessions.list":
       return { sessions: [] };
     default:
@@ -327,11 +339,10 @@ async function registerFull(api) {
     "aicq.chat.send",
     "aicq.chat.history",
     "aicq.chat.delete",
+    "aicq.chat.userUpload",
+    "aicq.chat.userfiles",
     "aicq.chat.streamChunk",
     "aicq.chat.streamEnd",
-    "aicq.chat.sendFile",
-    "aicq.chat.sendImage",
-    "aicq.chat.sendFileFromBase64",
     "aicq.groups.list",
     "aicq.groups.create",
     "aicq.groups.join",

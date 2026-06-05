@@ -406,6 +406,59 @@ function createAicqExpressApp(ctx) {
     }
   });
 
+  // User file upload — saves to userfiles dir and notifies AI agent
+  app.post("/api/user-upload", upload.single("file"), async (req, res) => {
+    await ensureInitialized();
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const agentId = getAgentId(req);
+      const fromId = req.body.fromId || req.body.from_id || agentId;
+      const isGroup = req.body.isGroup === "true" || req.body.isGroup === "1";
+      const result = await runtime.chat.handleUserFileUpload(agentId, fromId, req.file, isGroup);
+      res.json({ success: true, message: result.msg, localPath: result.localPath, originalName: result.originalName });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // List user files
+  app.get("/api/userfiles", async (req, res) => {
+    await ensureInitialized();
+    try {
+      const userfilesDir = runtime.userfilesDir;
+      if (!userfilesDir || !fs.existsSync(userfilesDir)) {
+        return res.json({ files: [] });
+      }
+      const files = fs.readdirSync(userfilesDir)
+        .filter(f => fs.statSync(path.join(userfilesDir, f)).isFile())
+        .map(f => {
+          const filePath = path.join(userfilesDir, f);
+          const stat = fs.statSync(filePath);
+          return {
+            name: f,
+            path: filePath,
+            size: stat.size,
+            modified: stat.mtime.toISOString(),
+          };
+        })
+        .sort((a, b) => b.modified.localeCompare(a.modified));
+      res.json({ files });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Serve user files
+  app.get("/api/userfiles/:filename", (req, res) => {
+    const USERFILES_DIR = runtime.userfilesDir || path.join(DATA_DIR, "userfiles");
+    const filePath = path.join(USERFILES_DIR, req.params.filename);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      res.sendFile(filePath);
+    } else {
+      res.status(404).json({ error: "File not found" });
+    }
+  });
+
   app.get("/api/files/:fileId", (req, res) => {
     const filePath = path.join(UPLOADS_DIR, req.params.fileId);
     if (fs.existsSync(filePath)) {
