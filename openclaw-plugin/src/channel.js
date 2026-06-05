@@ -347,55 +347,112 @@ _plugin.gateway = {
       }
     }
 
-    // Wire up inbound message handling via channelRuntime if available
-    if (ctx.channelRuntime) {
-      const { reply, routing } = ctx.channelRuntime;
-      if (reply && routing) {
-        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
+    // Wire up inbound message handling
+    // Register handlers for AICQ message types. When an inbound message arrives,
+    // we try the OpenClaw channelRuntime first; if that fails we fall back to
+    // calling z-ai CLI directly and sending the reply via chat.sendMessage.
+    if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
+      const inboundHandler = async (msg) => {
+        try {
+          // AICQ server wraps message content in msg.data for "message" type,
+          // but "relay" type may have fields at the top level.
+          const data = msg.data || msg;
+          const fromId = data.from || data.fromId || data.sender_id || msg.from || msg.fromId;
+          const isGroup = !!(data.isGroup || data.groupId || msg.isGroup || msg.groupId);
+          const text = data.content || data.text || data.payload || msg.content || msg.text || msg.payload || "";
 
-        if (runtime.serverClient && typeof runtime.serverClient.onMessage === "function") {
-          runtime.serverClient.onMessage(async (msg) => {
-            try {
-              const resolvedAgentId = agentId;
-              const routeResult = await routing.resolveAgentRoute({
-                channelId: "aicq-chat",
-                accountId,
-                fromId: msg.from || msg.sender_id,
-                chatType: msg.isGroup ? "group" : "dm",
-              });
+          console.log(`[AICQ Channel] Inbound message from=${fromId} isGroup=${isGroup} text=${(text || "").substring(0, 80)}`);
 
-              if (routeResult?.agentId) {
-                await reply.dispatchReplyWithBufferedBlockDispatcher({
-                  ctx: {
-                    channelId: "aicq-chat",
-                    accountId,
-                    fromId: msg.from || msg.sender_id,
-                    text: msg.content || msg.text || "",
-                    chatType: msg.isGroup ? "group" : "dm",
-                  },
-                  cfg,
-                  dispatcherOptions: {
-                    deliver: async (payload) => {
-                      if (runtime.chat && payload.text) {
-                        await runtime.chat.sendMessage(
-                          resolvedAgentId,
-                          msg.from || msg.sender_id,
-                          payload.text,
-                          { isGroup: !!msg.isGroup }
-                        );
-                      }
-                    },
-                  },
+          if (!fromId || !text) {
+            return; // Skip system messages (online_ack, presence, etc.)
+          }
+
+          // Skip our own messages
+          if (fromId === runtime.serverClient?.serverAccountId || fromId === agentId) {
+            return;
+          }
+
+          // Try channelRuntime (OpenClaw's built-in agent dispatch) first
+          if (ctx.channelRuntime) {
+            const { reply, routing } = ctx.channelRuntime;
+            if (reply && routing) {
+              try {
+                const routeResult = await routing.resolveAgentRoute({
+                  channelId: "aicq-chat",
+                  accountId,
+                  fromId,
+                  chatType: isGroup ? "group" : "dm",
                 });
+
+                if (routeResult?.agentId) {
+                  await reply.dispatchReplyWithBufferedBlockDispatcher({
+                    ctx: {
+                      channelId: "aicq-chat",
+                      accountId,
+                      fromId,
+                      text,
+                      chatType: isGroup ? "group" : "dm",
+                    },
+                    cfg,
+                    dispatcherOptions: {
+                      deliver: async (payload) => {
+                        if (runtime.chat && payload.text) {
+                          await runtime.chat.sendMessage(agentId, fromId, payload.text, { isGroup });
+                        }
+                      },
+                    },
+                  });
+                  return; // Successfully dispatched via channelRuntime
+                }
+              } catch (e) {
+                console.error("[AICQ Channel] channelRuntime dispatch failed, using fallback:", e.message);
               }
-            } catch (e) {
-              console.error("[AICQ Channel] Inbound message handling error:", e.message);
             }
-          });
+          }
+
+          // Fallback: call LLM via z-ai CLI and send reply directly
+          console.log("[AICQ Channel] Using fallback: direct z-ai CLI call");
+          try {
+            const { execFile } = await import('child_process');
+            const llmResult = await new Promise((resolve, reject) => {
+              execFile('z-ai', ['chat', '--prompt', text], { timeout: 60000 }, (err, stdout) => {
+                if (err) reject(err);
+                else resolve(stdout);
+              });
+            });
+            let replyText = '';
+            const jsonStart = llmResult.indexOf('{');
+            if (jsonStart >= 0) {
+              try {
+                const parsed = JSON.parse(llmResult.substring(jsonStart));
+                replyText = parsed.choices?.[0]?.message?.content || llmResult.trim();
+              } catch { replyText = llmResult.trim(); }
+            } else { replyText = llmResult.trim(); }
+
+            if (replyText && runtime.chat) {
+              await runtime.chat.sendMessage(agentId, fromId, replyText, { isGroup });
+              console.log(`[AICQ Channel] Fallback reply sent to ${fromId}: ${replyText.substring(0, 50)}`);
+            }
+          } catch (fallbackErr) {
+            console.error("[AICQ Channel] Fallback LLM also failed:", fallbackErr.message);
+          }
+        } catch (e) {
+          console.error("[AICQ Channel] Inbound message handling error:", e.message);
         }
+      };
+
+      // Register handler for relevant AICQ message types.
+      // ServerClient.onMessage(type, handler) requires a type string.
+      runtime.serverClient.onMessage("relay", inboundHandler);
+      runtime.serverClient.onMessage("message", inboundHandler);
+      runtime.serverClient.onMessage("group_message", inboundHandler);
+      console.log("[AICQ Channel] Inbound message handlers registered (relay, message, group_message)");
+
+      if (ctx.channelRuntime) {
+        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled (with z-ai CLI fallback)");
+      } else {
+        console.log("[AICQ Channel] channelRuntime not available — using z-ai CLI fallback");
       }
-    } else {
-      console.log("[AICQ Channel] channelRuntime not available — running in standalone mode");
     }
 
     // Update health status
