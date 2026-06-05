@@ -146,6 +146,30 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return { friends: _db.listFriends(currentAgentId) };
     case "aicq.friends.add":
       return await _handshake.addFriendByCode(currentAgentId, kwargs.temp_number);
+    case "aicq.friends.addByNumber": {
+      // Add friend by AICQ number directly (e.g., "1000000")
+      if (!kwargs.number && !kwargs.aicq_number)
+        return { error: "number or aicq_number is required" };
+      try {
+        await _serverClient.ensureAuth(currentAgentId);
+        const aicqNumber = kwargs.number || kwargs.aicq_number;
+        const result = await _serverClient.sendFriendRequest(aicqNumber, kwargs.message || 'Hi, I\'d like to add you as a friend!');
+        // If the request was accepted immediately, also add locally
+        if (result.status === 'accepted' && result.to_id) {
+          _db.addFriend({
+            agent_id: currentAgentId,
+            id: result.to_id,
+            public_key: '',
+            fingerprint: '',
+            friend_type: 'human',
+            ai_name: kwargs.nickname || '',
+          });
+        }
+        return { success: true, request_id: result.id, status: result.status, to_id: result.to_id };
+      } catch (e) {
+        return { error: e.message };
+      }
+    }
     case "aicq.friends.remove":
       _db.removeFriend(currentAgentId, kwargs.friend_id);
       return { success: true };
@@ -329,6 +353,7 @@ async function registerFull(api) {
     "aicq.status",
     "aicq.friends.list",
     "aicq.friends.add",
+    "aicq.friends.addByNumber",
     "aicq.friends.remove",
     "aicq.friends.requests",
     "aicq.friends.acceptRequest",

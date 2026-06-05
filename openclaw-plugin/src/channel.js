@@ -95,6 +95,7 @@ function resolveAccount(cfg, accountId) {
     accountId: resolvedAccountId,
     serverUrl: section.serverUrl || "https://aicq.online",
     autoAcceptFriends: section.autoAcceptFriends ?? true,
+    autoAddFriends: section.autoAddFriends || [],
     enabled: section.enabled ?? true,
     dmPolicy: section.dmPolicy || "allowlist",
     allowFrom: resolvedAllowFrom,
@@ -171,6 +172,7 @@ const _plugin = createChatChannelPlugin({
       "aicq.status",
       "aicq.friends.list",
       "aicq.friends.add",
+      "aicq.friends.addByNumber",
       "aicq.friends.remove",
       "aicq.friends.requests",
       "aicq.friends.acceptRequest",
@@ -342,6 +344,49 @@ _plugin.gateway = {
             await runtime.handleGateway("aicq.groups.list", {});
           } catch (e) {
             console.warn("[AICQ Channel] Initial sync failed:", e.message);
+          }
+        }
+
+        // Auto-add friends from config (autoAddFriends list)
+        const autoAddFriends = account?.autoAddFriends || section?.autoAddFriends || [];
+        if (Array.isArray(autoAddFriends) && autoAddFriends.length > 0) {
+          console.log(`[AICQ Channel] Auto-adding ${autoAddFriends.length} friend(s) from config...`);
+          for (const friendEntry of autoAddFriends) {
+            try {
+              const aicqNumber = typeof friendEntry === 'string' ? friendEntry : friendEntry.number;
+              const friendMsg = typeof friendEntry === 'object' ? friendEntry.message : undefined;
+              if (!aicqNumber) continue;
+              const result = await runtime.handleGateway("aicq.friends.addByNumber", {
+                number: aicqNumber,
+                message: friendMsg || 'Hi, I\'d like to add you!',
+              });
+              if (result.error) {
+                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${result.error}`);
+              } else {
+                console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: ${result.status}`);
+              }
+            } catch (e) {
+              console.warn(`[AICQ Channel] Auto-add friend failed:`, e.message);
+            }
+          }
+        }
+
+        // Auto-accept pending friend requests if autoAcceptFriends is true
+        if (account?.autoAcceptFriends && runtime.handleGateway) {
+          try {
+            const pendingResult = await runtime.handleGateway("aicq.friends.requests", {});
+            if (pendingResult.requests && pendingResult.requests.length > 0) {
+              for (const req of pendingResult.requests) {
+                try {
+                  await runtime.handleGateway("aicq.friends.acceptRequest", { request_id: req.session_id });
+                  console.log(`[AICQ Channel] Auto-accepted friend request from ${req.requester_id}`);
+                } catch (e) {
+                  console.warn(`[AICQ Channel] Auto-accept failed:`, e.message);
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[AICQ Channel] Auto-accept check failed:", e.message);
           }
         }
       } catch (e) {

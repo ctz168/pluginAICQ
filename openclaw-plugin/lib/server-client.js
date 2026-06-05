@@ -122,8 +122,10 @@ class ServerClient {
     return this._request('GET', '/friends');
   }
 
-  async sendFriendRequest(toId) {
-    return this._request('POST', '/friends/request', { to_id: toId });
+  async sendFriendRequest(toId, message = '') {
+    const body = { to_id: toId };
+    if (message) body.message = message;
+    return this._request('POST', '/friends/request', body);
   }
 
   async listFriendRequests() {
