@@ -132,7 +132,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.7.0",
+        version: "3.8.0",
         architecture: "channel",
       };
     case "aicq.friends.list":
@@ -239,6 +239,45 @@ async function handleGatewayMethod(method, kwargs = {}) {
     case "aicq.groups.silent":
       _db.setGroupSilentMode(currentAgentId, kwargs.group_id, !!kwargs.silent);
       return { success: true, silent: !!kwargs.silent };
+    case "aicq.chat.sendFile": {
+      if (!kwargs.targetId) return { error: "targetId is required" };
+      if (!kwargs.filePath && !kwargs.file_path) return { error: "filePath is required" };
+      const sendFilePath = kwargs.filePath || kwargs.file_path;
+      const sendResult = await _chat.sendFile(currentAgentId, kwargs.targetId, sendFilePath, {
+        isGroup: !!kwargs.isGroup,
+        caption: kwargs.caption || "",
+      });
+      return { success: true, file: sendResult };
+    }
+    case "aicq.chat.sendImage": {
+      if (!kwargs.targetId) return { error: "targetId is required" };
+      if (!kwargs.filePath && !kwargs.file_path && !kwargs.base64) return { error: "filePath or base64 is required" };
+      if (kwargs.base64) {
+        const imgResult = await _chat.sendFileFromBase64(
+          currentAgentId, kwargs.targetId, kwargs.base64,
+          kwargs.fileName || kwargs.file_name || "image.png",
+          { isGroup: !!kwargs.isGroup, caption: kwargs.caption || "", mimeType: kwargs.mimeType || "" }
+        );
+        return { success: true, file: imgResult };
+      }
+      const imgFilePath = kwargs.filePath || kwargs.file_path;
+      const imgResult = await _chat.sendFile(currentAgentId, kwargs.targetId, imgFilePath, {
+        isGroup: !!kwargs.isGroup,
+        caption: kwargs.caption || "",
+      });
+      return { success: true, file: imgResult };
+    }
+    case "aicq.chat.sendFileFromBase64": {
+      if (!kwargs.targetId) return { error: "targetId is required" };
+      if (!kwargs.base64) return { error: "base64 is required" };
+      if (!kwargs.fileName && !kwargs.file_name) return { error: "fileName is required" };
+      const b64Result = await _chat.sendFileFromBase64(
+        currentAgentId, kwargs.targetId, kwargs.base64,
+        kwargs.fileName || kwargs.file_name,
+        { isGroup: !!kwargs.isGroup, caption: kwargs.caption || "", mimeType: kwargs.mimeType || "" }
+      );
+      return { success: true, file: b64Result };
+    }
     case "aicq.sessions.list":
       return { sessions: [] };
     default:
@@ -290,6 +329,9 @@ async function registerFull(api) {
     "aicq.chat.delete",
     "aicq.chat.streamChunk",
     "aicq.chat.streamEnd",
+    "aicq.chat.sendFile",
+    "aicq.chat.sendImage",
+    "aicq.chat.sendFileFromBase64",
     "aicq.groups.list",
     "aicq.groups.create",
     "aicq.groups.join",
