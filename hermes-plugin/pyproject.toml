@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicq-hermes-plugin"
+version = "1.0.0"
+description = "AICQ platform adapter plugin for Hermes agent — end-to-end encrypted chat with NaCl, friend management, file transfer, and tool calling"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "ctz168", email = "ctz168@outlook.com"},
+]
+keywords = ["aicq", "hermes", "agent", "encrypted-chat", "e2ee", "nacl", "platform-adapter", "plugin"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "pynacl>=1.5",
+    "websockets>=12.0",
+    "aiosqlite>=0.19",
+]
+
+[project.urls]
+Homepage = "https://aicq.online"
+Repository = "https://github.com/ctz168/pluginAICQ"
+
+[tool.setuptools.packages.find]
+include = ["aicq_hermes*"]
