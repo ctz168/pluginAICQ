@@ -91,11 +91,14 @@ function resolveAccount(cfg, accountId) {
     ? rawAllowFrom.map((entry) => resolveTemplateVar(cfg, entry))
     : rawAllowFrom;
 
+  // Resolve autoAddFriends entries (may contain AICQ numbers)
+  const rawAutoAddFriends = section.autoAddFriends || [];
+
   return {
     accountId: resolvedAccountId,
     serverUrl: section.serverUrl || "https://aicq.online",
     autoAcceptFriends: section.autoAcceptFriends ?? true,
-    autoAddFriends: section.autoAddFriends || [],
+    autoAddFriends: Array.isArray(rawAutoAddFriends) ? rawAutoAddFriends : [],
     enabled: section.enabled ?? true,
     dmPolicy: section.dmPolicy || "allowlist",
     allowFrom: resolvedAllowFrom,
@@ -172,7 +175,6 @@ const _plugin = createChatChannelPlugin({
       "aicq.status",
       "aicq.friends.list",
       "aicq.friends.add",
-      "aicq.friends.addByNumber",
       "aicq.friends.remove",
       "aicq.friends.requests",
       "aicq.friends.acceptRequest",
@@ -311,14 +313,23 @@ _plugin.gateway = {
     const agentId = account?.accountId || accountId || OPENCLAW_DEFAULT_AGENT_ID;
 
     // Ensure we have an identity in the plugin DB
+    // IMPORTANT: We must try loadAgent first, not just listAgents().
+    // listAgents() only returns summary rows (no secret keys in cache),
+    // so after a process restart the in-memory _cache is empty but the DB
+    // still holds the identity.  We only create a NEW identity when the
+    // database truly has no record for this agent — otherwise we'd
+    // generate fresh keys and overwrite the existing ones (INSERT OR REPLACE),
+    // which would break the server account and all friend relationships.
     if (runtime.identity) {
-      const existing = runtime.identity.listAgents();
-      if (existing.length === 0) {
+      const existing = runtime.identity.loadAgent(agentId);
+      if (!existing) {
         const agentName = (Array.isArray(agents) && agents.length > 0 && agents[0]?.name)
           ? agents[0].name
           : "AICQ Agent";
         runtime.identity.createAgent(agentId, agentName);
-        console.log(`[AICQ Channel] Created agent identity: ${agentId}`);
+        console.log(`[AICQ Channel] Created NEW agent identity: ${agentId}`);
+      } else {
+        console.log(`[AICQ Channel] Reusing existing identity: ${agentId} (pubkey: ${existing.signing_public_key?.substring(0, 16)}...)`);
       }
     }
 
@@ -347,39 +358,77 @@ _plugin.gateway = {
           }
         }
 
+        // Also sync friends from the AICQ server into the local DB
+        // This ensures we have the friend list for conversation fetching later
+        if (runtime.serverClient && runtime.db && runtime.identity) {
+          try {
+            const friendsResult = await runtime.serverClient.listFriends();
+            if (friendsResult.friends) {
+              for (const f of friendsResult.friends) {
+                const existing = runtime.db.getFriend(agentId, f.id);
+                if (!existing) {
+                  runtime.db.addFriend({
+                    agent_id: agentId,
+                    id: f.id,
+                    public_key: f.public_key || f.publicKey || "",
+                    fingerprint: "",
+                    friend_type: f.type || "human",
+                    ai_name: f.agent_name || f.ai_name || f.display_name || "",
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[AICQ Channel] Friends sync failed:", e.message);
+          }
+        }
+
         // Auto-add friends from config (autoAddFriends list)
-        const autoAddFriends = account?.autoAddFriends || section?.autoAddFriends || [];
+        // This ensures configured friends are added even on fresh installs
+        // autoAddFriends is set in index.js (from env var AICQ_AUTO_ADD_FRIENDS or default ["1000000"])
+        const autoAddFriends = runtime.autoAddFriends || [];
         if (Array.isArray(autoAddFriends) && autoAddFriends.length > 0) {
           console.log(`[AICQ Channel] Auto-adding ${autoAddFriends.length} friend(s) from config...`);
           for (const friendEntry of autoAddFriends) {
             try {
               const aicqNumber = typeof friendEntry === 'string' ? friendEntry : friendEntry.number;
-              const friendMsg = typeof friendEntry === 'object' ? friendEntry.message : undefined;
               if (!aicqNumber) continue;
-              const result = await runtime.handleGateway("aicq.friends.addByNumber", {
-                number: aicqNumber,
-                message: friendMsg || 'Hi, I\'d like to add you!',
-              });
-              if (result.error) {
-                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${result.error}`);
+              // Use the server client to send a friend request by AICQ number
+              const result = await runtime.serverClient.sendFriendRequest(aicqNumber);
+              if (result.status === 'accepted' && result.to_id) {
+                const existingFriend = runtime.db.getFriend(agentId, result.to_id);
+                if (!existingFriend) {
+                  runtime.db.addFriend({
+                    agent_id: agentId,
+                    id: result.to_id,
+                    public_key: '',
+                    fingerprint: '',
+                    friend_type: 'human',
+                    ai_name: '',
+                  });
+                }
+                console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: accepted`);
               } else {
-                console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: ${result.status}`);
+                console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: ${result.status || 'request sent'}`);
               }
             } catch (e) {
-              console.warn(`[AICQ Channel] Auto-add friend failed:`, e.message);
+              console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed:`, e.message);
             }
           }
         }
 
-        // Auto-accept pending friend requests if autoAcceptFriends is true
-        if (account?.autoAcceptFriends && runtime.handleGateway) {
+        // Auto-accept pending friend requests
+        // autoAcceptFriends is set in index.js (from env var AICQ_AUTO_ACCEPT_FRIENDS or default true)
+        const autoAcceptFriends = runtime.autoAcceptFriends !== false;
+        if (autoAcceptFriends && runtime.serverClient) {
           try {
-            const pendingResult = await runtime.handleGateway("aicq.friends.requests", {});
-            if (pendingResult.requests && pendingResult.requests.length > 0) {
-              for (const req of pendingResult.requests) {
+            const pendingResult = await runtime.serverClient.listFriendRequests();
+            const requests = pendingResult.requests || pendingResult.pending || [];
+            if (requests.length > 0) {
+              for (const req of requests) {
                 try {
-                  await runtime.handleGateway("aicq.friends.acceptRequest", { request_id: req.session_id });
-                  console.log(`[AICQ Channel] Auto-accepted friend request from ${req.requester_id}`);
+                  await runtime.serverClient.acceptFriendRequest(req.id || req.request_id || req.session_id);
+                  console.log(`[AICQ Channel] Auto-accepted friend request from ${req.from_id || req.requester_id}`);
                 } catch (e) {
                   console.warn(`[AICQ Channel] Auto-accept failed:`, e.message);
                 }
@@ -414,6 +463,16 @@ _plugin.gateway = {
               const isFileMsg = !!(msg.local_path || msg._synthetic);
               let textContent = msg.content || msg.text || "";
 
+              // Skip messages from the bot itself (echo from sendMessage)
+              if (fromId === runtime.serverClient?.serverAccountId || fromId === agentId || fromId === 'main') {
+                return;
+              }
+
+              // Skip empty messages
+              if (!textContent || !textContent.trim()) return;
+
+              console.log(`[AICQ Channel] Processing inbound message from ${fromId}: ${String(textContent).substring(0, 80)}`);
+
               // For file messages, include the local path info in the dispatch text
               if (isFileMsg && msg.local_path) {
                 // The content already includes file info (from the synthetic message
@@ -421,11 +480,14 @@ _plugin.gateway = {
               }
 
               const routeResult = await routing.resolveAgentRoute({
+                cfg,
                 channelId: "aicq-chat",
                 accountId,
                 fromId,
                 chatType: isGroup ? "group" : "dm",
               });
+
+              console.log(`[AICQ Channel] Route result: agentId=${routeResult?.agentId}, sessionKey=${routeResult?.sessionKey}`);
 
               if (routeResult?.agentId) {
                 await reply.dispatchReplyWithBufferedBlockDispatcher({
@@ -434,11 +496,19 @@ _plugin.gateway = {
                     accountId,
                     fromId,
                     text: textContent,
-                    chatType: isGroup ? "group" : "dm",
+                    Body: textContent,
+                    BodyForAgent: textContent,
+                    RawBody: textContent,
+                    CommandBody: textContent,
+                    ChatType: isGroup ? "group" : "direct",
+                    SenderId: fromId,
+                    SessionKey: routeResult.sessionKey,
+                    AccountId: accountId,
                   },
                   cfg,
                   dispatcherOptions: {
                     deliver: async (payload) => {
+                      console.log(`[AICQ Channel] Delivering AI response to ${fromId}: ${String(payload.text).substring(0, 80)}`);
                       if (runtime.chat && payload.text) {
                         await runtime.chat.sendMessage(
                           resolvedAgentId,
@@ -452,9 +522,27 @@ _plugin.gateway = {
                 });
               }
             } catch (e) {
-              console.error("[AICQ Channel] Inbound message handling error:", e.message);
+              console.error("[AICQ Channel] Inbound message handling error:", e.message, e.stack);
             }
           });
+        }
+        // Fetch recent conversations from all friends to pick up messages
+        // that were sent while the bot was offline
+        // NOTE: This is placed AFTER the onNewMessage callback is set up,
+        // so that fetched messages can be properly dispatched to the AI.
+        if (runtime.chat && runtime.chat._onNewMessage) {
+          try {
+            const friends = runtime.db.listFriends(agentId);
+            for (const friend of friends) {
+              const friendId = friend.id || friend.friend_id;
+              if (friendId) {
+                await runtime.chat._fetchAndProcessUnread(agentId, friendId);
+              }
+            }
+            console.log(`[AICQ Channel] Fetched conversations from ${friends.length} friends`);
+          } catch (e) {
+            console.warn("[AICQ Channel] Initial conversation fetch failed:", e.message);
+          }
         }
       }
     } else {

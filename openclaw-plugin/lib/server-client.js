@@ -122,10 +122,8 @@ class ServerClient {
     return this._request('GET', '/friends');
   }
 
-  async sendFriendRequest(toId, message = '') {
-    const body = { to_id: toId };
-    if (message) body.message = message;
-    return this._request('POST', '/friends/request', body);
+  async sendFriendRequest(toId) {
+    return this._request('POST', '/friends/request', { to_id: toId });
   }
 
   async listFriendRequests() {
@@ -162,6 +160,42 @@ class ServerClient {
 
   async inviteGroupMember(groupId, accountId) {
     return this._request('POST', `/groups/${groupId}/members`, { account_id: accountId });
+  }
+
+  // ─── Chat / Message API ──────────────────────────────────────────
+
+  /**
+   * Fetch conversation history with a friend from the server.
+   * GET /api/v1/chat/conversation/:friendId?limit=50
+   */
+  async getConversation(friendId, limit = 50, before = null) {
+    let path = `/chat/conversation/${friendId}?limit=${limit}`;
+    if (before) path += `&before=${encodeURIComponent(before)}`;
+    return this._request('GET', path);
+  }
+
+  /**
+   * Send a message to a friend via REST API.
+   * POST /api/v1/chat/messages
+   */
+  async sendChatMessage(toId, content, msgType = 'text', extra = {}) {
+    const body = {
+      to: toId,
+      data: {
+        type: msgType,
+        content,
+        ...extra,
+      },
+    };
+    return this._request('POST', '/chat/messages', body);
+  }
+
+  /**
+   * Mark messages from a friend as read.
+   * POST /api/v1/chat/mark-read
+   */
+  async markRead(friendId) {
+    return this._request('POST', '/chat/mark-read', { friend_id: friendId });
   }
 
   // ─── Temp Number / Handshake API ─────────────────────────────────
@@ -245,12 +279,17 @@ class ServerClient {
       this.connected = true;
       this._backoff = 1000;
       console.log('[WS] Authenticated as', data.nodeId);
-      return;
+      // Notify reconnect handlers so ChatManager can fetch missed messages
+      const reconnectHandlers = this._messageHandlers['_reconnected'] || [];
+      for (const handler of reconnectHandlers) {
+        try { handler(data); } catch (e) { console.error('[WS] Reconnect handler error:', e); }
+      }
+      // Don't return here — let handlers (e.g. unread_counts) process too
     }
 
     if (type === 'error') {
       console.error('[WS] Server error:', data.message || data.code);
-      return;
+      // Don't return — let handlers see the error too
     }
 
     // Dispatch to registered handlers
