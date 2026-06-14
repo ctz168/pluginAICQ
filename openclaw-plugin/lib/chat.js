@@ -26,12 +26,9 @@ class ChatManager {
     // Incoming file chunk assembly state: fileId -> { meta, chunks }
     this._incomingFiles = new Map();
 
-    // Track which conversations we've already fetched to avoid duplicate processing
-    this._fetchedConversations = new Set();
-
     // Listen for incoming messages via WS
     this.server.onMessage('relay', (data) => this._handleIncoming(data));
-    this.server.onMessage('message', (data) => this._handleServerMessage(data));
+    this.server.onMessage('message', (data) => this._handleIncoming(data));
     this.server.onMessage('group_message', (data) => this._handleGroupIncoming(data));
     this.server.onMessage('handshake_initiate', (data) => this._handleHandshakeRequest(data));
     this.server.onMessage('presence', (data) => this._handlePresence(data));
@@ -40,51 +37,6 @@ class ChatManager {
     this.server.onMessage('image', (data) => this._handleFileMessage(data));
     this.server.onMessage('stream_chunk', (data) => this._handleStreamChunk(data));
     this.server.onMessage('stream_end', (data) => this._handleStreamEnd(data));
-    this.server.onMessage('unread_counts', (data) => this._handleUnreadCounts(data));
-    this.server.onMessage('friends_online', (data) => this._handleFriendsOnline(data));
-
-    // On WS reconnection, fetch unread messages from all friends
-    this.server.onMessage('_reconnected', () => this._onWSReconnect());
-
-    // Periodic poll for unread messages (every 30s as backup)
-    this._pollInterval = setInterval(() => this._pollUnreadMessages(), 30000);
-  }
-
-  /**
-   * Called when WebSocket reconnects to the AICQ server.
-   * Fetches unread messages from all friends to ensure nothing was missed.
-   */
-  _onWSReconnect() {
-    const agentId = this.server.currentAgentId;
-    if (!agentId) return;
-
-    console.log('[Chat] WS reconnected — fetching unread messages from all friends');
-    const friends = this.db.listFriends(agentId);
-    for (const friend of friends) {
-      const friendId = friend.id || friend.friend_id;
-      if (friendId) {
-        this._fetchAndProcessUnread(agentId, friendId).catch(e => {
-          console.warn(`[Chat] Reconnect fetch failed for ${friendId}:`, e.message);
-        });
-      }
-    }
-  }
-
-  /**
-   * Periodic poll: fetch unread messages from all friends.
-   * This is a safety net in case WS events are missed.
-   */
-  _pollUnreadMessages() {
-    const agentId = this.server.currentAgentId;
-    if (!agentId || !this.server.connected) return;
-
-    const friends = this.db.listFriends(agentId);
-    for (const friend of friends) {
-      const friendId = friend.id || friend.friend_id;
-      if (friendId) {
-        this._fetchAndProcessUnread(agentId, friendId).catch(() => {});
-      }
-    }
   }
 
   setOnNewMessage(callback) {
@@ -138,21 +90,22 @@ class ChatManager {
       }
     }
 
-    // Send via WebSocket relay (primary for online friends)
+    // Send via WebSocket relay
     const sent = this.server.sendWS({
       type: 'relay',
       targetId: targetId,
       payload,
     });
 
-    // Also try REST API as fallback or confirmation
-    try {
-      await this.server.sendChatMessage(targetId, content, type, {
-        file_url, file_name, local_path,
-      });
-    } catch (e) {
-      // REST failed — if WS also failed, queue offline
-      if (!sent) {
+    // Also try REST fallback
+    if (!sent) {
+      try {
+        await this.server._request('POST', '/messages/send', {
+          targetId,
+          payload,
+        });
+      } catch (e) {
+        // Queue offline
         this.db.enqueueOffline({
           agent_id: agentId,
           target_id: targetId,
@@ -234,19 +187,7 @@ class ChatManager {
       status: 'delivered',
     });
 
-    // Construct full message for callback (saveMessage only returns {id, timestamp})
-    const fullMsg = {
-      ...msg,
-      agent_id: agentId,
-      from_id: fromId,
-      to_id: agentId,
-      type: isFileMessage ? (this._isImageMessage(msgType, content, data) ? 'image' : 'file') : 'text',
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      local_path: localFilePath,
-      is_group: 0,
-    };
-
-    if (this._onNewMessage) this._onNewMessage(fullMsg);
+    if (this._onNewMessage) this._onNewMessage(msg);
 
     // If this was a file/image message, also inject a synthetic message
     // telling the AI agent about the local file path
@@ -266,260 +207,6 @@ class ChatManager {
         _original_msg_id: msg.message_id || msg.id,
       };
       this._onNewMessage(syntheticMsg);
-    }
-  }
-
-  /**
-   * Handle server-pushed messages (type: "message" from WS).
-   * These are offline messages that the server pushes when we come online,
-   * or live messages from friends that come via the "message" WS type.
-   * Format: { type: "message", from: "friendId", data: { id, fromId, toId, type, content, ... } }
-   */
-  _handleServerMessage(data) {
-    const agentId = this.server.currentAgentId;
-    if (!agentId) return;
-
-    const fromId = data.from || (data.data && data.data.fromId);
-    if (!fromId) return;
-
-    // The server pushes message data in data.data or data directly
-    const msgData = data.data || data;
-    let content = msgData.content || msgData.text || '';
-    const msgType = msgData.type || 'text';
-    const msgId = msgData.id || null;
-    const mediaUrl = msgData.mediaUrl || msgData.media_url || null;
-    const fileInfo = msgData.fileInfo || msgData.file_info || null;
-
-    // Check if we already processed this message (dedup)
-    if (msgId && this._isMessageProcessed(agentId, msgId)) {
-      console.log(`[Chat] Skipping already-processed server message: ${msgId}`);
-      return;
-    }
-
-    // Mark as processed
-    if (msgId) this._markMessageProcessed(agentId, msgId);
-
-    console.log(`[Chat] Server message from ${fromId}: ${String(content).substring(0, 100)}`);
-
-    // Detect file/image messages
-    const isFileMessage = this._isFileMessage(msgType, content, msgData);
-    let localFilePath = null;
-    let originalFileName = null;
-
-    if (isFileMessage) {
-      const fileResult = this._saveIncomingFileToUserfiles(agentId, fromId, content, msgData);
-      if (fileResult) {
-        localFilePath = fileResult.localPath;
-        originalFileName = fileResult.originalName;
-      }
-    }
-
-    // Save message
-    const msg = this.db.saveMessage({
-      agent_id: agentId,
-      target_id: fromId,
-      from_id: fromId,
-      to_id: agentId,
-      type: isFileMessage ? (this._isImageMessage(msgType, content, msgData) ? 'image' : 'file') : 'text',
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      file_url: mediaUrl,
-      file_name: originalFileName || (fileInfo && fileInfo.filename) || null,
-      local_path: localFilePath,
-      is_group: 0,
-      status: 'delivered',
-    });
-
-    // Construct full message for callback (saveMessage only returns {id, timestamp})
-    const fullMsg = {
-      ...msg,
-      agent_id: agentId,
-      from_id: fromId,
-      to_id: agentId,
-      type: isFileMessage ? (this._isImageMessage(msgType, content, msgData) ? 'image' : 'file') : 'text',
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      local_path: localFilePath,
-      is_group: 0,
-    };
-
-    if (this._onNewMessage) this._onNewMessage(fullMsg);
-
-    // Inject synthetic file message
-    if (isFileMessage && localFilePath && this._onNewMessage) {
-      const isImage = this._isImageMessage(msgType, content, msgData);
-      const fileType = isImage ? '图片' : '文件';
-      const syntheticMsg = {
-        agent_id: agentId,
-        target_id: fromId,
-        from_id: fromId,
-        to_id: agentId,
-        type: 'text',
-        content: `[用户发送了${fileType}] ${originalFileName || '未知文件名'}\n本地路径: ${localFilePath}\n请处理该${fileType}。`,
-        is_group: 0,
-        status: 'delivered',
-        _synthetic: true,
-        _original_msg_id: msg.message_id || msg.id,
-      };
-      this._onNewMessage(syntheticMsg);
-    }
-
-    // Mark as read on the server
-    this.server.markRead(fromId).catch(e => {
-      console.warn('[Chat] mark-read failed:', e.message);
-    });
-  }
-
-  /**
-   * Handle unread_counts WS event.
-   * When the server reports unread messages, fetch the actual conversation
-   * from the REST API to get any messages that weren't pushed via WS.
-   */
-  _handleUnreadCounts(data) {
-    const agentId = this.server.currentAgentId;
-    if (!agentId) return;
-
-    const unread = data.unread || {};
-    for (const friendId of Object.keys(unread)) {
-      const count = unread[friendId];
-      if (count > 0) {
-        console.log(`[Chat] Unread counts: ${count} from ${friendId}, fetching conversation...`);
-        this._fetchAndProcessUnread(agentId, friendId);
-      }
-    }
-  }
-
-  /**
-   * Handle friends_online WS event.
-   */
-  _handleFriendsOnline(data) {
-    const nodeIds = data.nodeIds || [];
-    console.log(`[Chat] Friends online: ${nodeIds.join(', ')}`);
-  }
-
-  /**
-   * Fetch unread messages from the REST API and process them.
-   */
-  async _fetchAndProcessUnread(agentId, friendId) {
-    try {
-      const result = await this.server.getConversation(friendId, 50);
-      const messages = result.messages || [];
-      
-      console.log(`[Chat] Fetched ${messages.length} messages from conversation with ${friendId}`);
-      
-      for (const msg of messages) {
-        // Skip messages we sent (from us)
-        const msgFromId = msg.from_id || msg.fromId;
-        if (msgFromId === this.server.serverAccountId || msgFromId === agentId) continue;
-        
-        const msgId = msg.id || null;
-        
-        // Dedup
-        if (msgId && this._isMessageProcessed(agentId, msgId)) continue;
-        if (msgId) this._markMessageProcessed(agentId, msgId);
-        
-        const content = msg.content || msg.text || '';
-        const msgType = msg.type || 'text';
-        const mediaUrl = msg.media_url || msg.mediaUrl || null;
-        const fileInfo = msg.file_info || msg.fileInfo || null;
-        
-        // Detect file/image
-        const isFileMessage = this._isFileMessage(msgType, content, msg);
-        let localFilePath = null;
-        let originalFileName = null;
-        
-        if (isFileMessage) {
-          const fileResult = this._saveIncomingFileToUserfiles(agentId, msgFromId || friendId, content, msg);
-          if (fileResult) {
-            localFilePath = fileResult.localPath;
-            originalFileName = fileResult.originalName;
-          }
-        }
-        
-        // Save message
-        const savedMsg = this.db.saveMessage({
-          agent_id: agentId,
-          target_id: friendId,
-          from_id: msgFromId || friendId,
-          to_id: agentId,
-          type: isFileMessage ? (this._isImageMessage(msgType, content, msg) ? 'image' : 'file') : 'text',
-          content: typeof content === 'string' ? content : JSON.stringify(content),
-          file_url: mediaUrl,
-          file_name: originalFileName || (fileInfo && fileInfo.filename) || null,
-          local_path: localFilePath,
-          is_group: 0,
-          status: 'delivered',
-        });
-        
-        // Construct a full message object for the callback since saveMessage
-        // only returns { id, timestamp }
-        const fullMsg = {
-          ...savedMsg,
-          agent_id: agentId,
-          target_id: friendId,
-          from_id: msgFromId || friendId,
-          to_id: agentId,
-          type: isFileMessage ? (this._isImageMessage(msgType, content, msg) ? 'image' : 'file') : 'text',
-          content: typeof content === 'string' ? content : JSON.stringify(content),
-          file_url: mediaUrl,
-          file_name: originalFileName || (fileInfo && fileInfo.filename) || null,
-          local_path: localFilePath,
-          is_group: 0,
-          status: 'delivered',
-        };
-        
-        if (this._onNewMessage) this._onNewMessage(fullMsg);
-        
-        // Inject synthetic file message
-        if (isFileMessage && localFilePath && this._onNewMessage) {
-          const isImage = this._isImageMessage(msgType, content, msg);
-          const fileType = isImage ? '图片' : '文件';
-          const syntheticMsg = {
-            agent_id: agentId,
-            target_id: friendId,
-            from_id: msgFromId || friendId,
-            to_id: agentId,
-            type: 'text',
-            content: `[用户发送了${fileType}] ${originalFileName || '未知文件名'}\n本地路径: ${localFilePath}\n请处理该${fileType}。`,
-            is_group: 0,
-            status: 'delivered',
-            _synthetic: true,
-            _original_msg_id: savedMsg.message_id || savedMsg.id,
-          };
-          this._onNewMessage(syntheticMsg);
-        }
-      }
-      
-      // Mark as read on the server
-      this.server.markRead(friendId).catch(e => {
-        console.warn('[Chat] mark-read failed:', e.message);
-      });
-    } catch (e) {
-      console.error(`[Chat] Failed to fetch conversation with ${friendId}:`, e.message);
-    }
-  }
-
-  /**
-   * Check if a message has already been processed (dedup).
-   */
-  _isMessageProcessed(agentId, msgId) {
-    // Check in-memory set first
-    const key = `${agentId}:${msgId}`;
-    if (this._processedMsgIds && this._processedMsgIds.has(key)) return true;
-    return false;
-  }
-
-  /**
-   * Mark a message as processed.
-   */
-  _markMessageProcessed(agentId, msgId) {
-    if (!this._processedMsgIds) {
-      this._processedMsgIds = new Set();
-    }
-    const key = `${agentId}:${msgId}`;
-    this._processedMsgIds.add(key);
-    // Keep the set from growing unbounded
-    if (this._processedMsgIds.size > 10000) {
-      const entries = [...this._processedMsgIds];
-      this._processedMsgIds = new Set(entries.slice(-5000));
     }
   }
 
